@@ -1,0 +1,30 @@
+Confusion Matrix and Statistics
+
+           Reference
+Prediction  LDepleted LDominant
+  LDepleted        50        15
+  LDominant        65       415
+                                          
+               Accuracy : 0.8532          
+                 95% CI : (0.8207, 0.8819)
+    No Information Rate : 0.789           
+    P-Value [Acc > NIR] : 8.272e-05       
+                                          
+                  Kappa : 0.4756          
+                                          
+ Mcnemar's Test P-Value : 4.293e-08       
+                                          
+            Sensitivity : 0.43478         
+            Specificity : 0.96512         
+         Pos Pred Value : 0.76923         
+         Neg Pred Value : 0.86458         
+              Precision : 0.76923         
+                 Recall : 0.43478         
+                     F1 : 0.55556         
+             Prevalence : 0.21101         
+         Detection Rate : 0.09174         
+   Detection Prevalence : 0.11927         
+      Balanced Accuracy : 0.69995         
+                                          
+       'Positive' Class : LDepleted       
+                                          
