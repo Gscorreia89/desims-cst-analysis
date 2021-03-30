@@ -60,7 +60,6 @@ species_filtered.index.name = 'Seq_ID'
 species_filtered.to_csv('../../Final Data for paper/16S Data/VMET2_16S_SpeciesMatrixFiltered.csv', index=True)
 
 
-
 """
 
 VMET Dataset
