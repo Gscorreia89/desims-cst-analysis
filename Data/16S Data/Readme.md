@@ -9,9 +9,6 @@
 
 **VMET2_16S_SpeciesMatrixFiltered.csv**: Filtered data matrix. Generated with the "aggregateOTUs.py" script
 
-**VMET2_16S_summarymetrics.csv**: .CSV file with multiple microbe diversity metrics and corresponding Identifiers. 
-
-**VMET2_16S_Species_CLR.csv**: Centre-log-ratio transform of the *VMET2_16S_SpeciesMatrixFiltered.csv* data matrix.
 
 
 ## VMET cohort
@@ -23,6 +20,3 @@
 
 **VMET_16S_SpeciesMatrixFiltered.csv**: Filtered data matrix. Generated with the "aggregateOTUs.py" script
 
-**VMET_16S_summarymetrics.csv**: .CSV file with multiple microbe diversity metrics and corresponding Identifiers. 
-
-**VMET_16S_Species_CLR.csv**: Centre-log-ratio transform of the *VMET_16S_SpeciesMatrixFiltered.csv* data matrix.
