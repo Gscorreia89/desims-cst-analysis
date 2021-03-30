@@ -1,0 +1,365 @@
+---
+title: "CST Typing by LC-MS - Detection of Lactobacillus Depleted Status"
+output: html_notebook
+---
+
+```{r "setup", include=FALSE}
+require("knitr")
+opts_knit$set(root.dir='./')
+```
+
+Load the required packages
+```{r, include=FALSE}
+library(ggplot2)
+library(doParallel)
+library(readr)
+library(reshape2)
+library(caret)
+library(plotROC)
+library(pROC)
+library(precrec)
+set.seed(57596)
+# Set ggplot titles to appear at center
+ggplot() + theme(plot.title = element_text(hjust = 'center'))
+registerDoParallel(cores=30)
+dir.create('./CST_Comparisons_LC-MS/', recursive=TRUE)
+dir.create('./CST_Comparisons_LC-MS/Precision_Recall_Curves/', recursive=TRUE)
+
+```
+
+# Data import
+Load the VMET LC-MS datasets
+```{r, warning=F, echo=F, message=F}
+# Load the DESI-MS datasets
+lc_lneg_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_LNEG.csv", header=1, sep=',')
+lc_lpos_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_LPOS.csv", header=1, sep=',')
+lc_rneg_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_RNEG.csv", header=1, sep=',')
+lc_rpos_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_RPOS.csv", header=1, sep=',')
+lc_hneg_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_HNEG.csv", header=1, sep=',')
+
+# Load the Study Metadata
+study_metadata_vmet <- read_csv("../../Final Data for paper/VMET_Metadata.csv")
+cst_metadata_vmet <- read_csv("../../Final Data for paper/VMET_CSTAssignment.csv")
+
+study_metadata_vmet <- merge(study_metadata_vmet, cst_metadata_vmet, by='Seq_ID')
+
+# Merge with the clinical metadata
+lc_lneg_vmet <- merge(study_metadata_vmet, lc_lneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_lpos_vmet <- merge(study_metadata_vmet, lc_lpos_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_rneg_vmet <- merge(study_metadata_vmet, lc_rneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_rpos_vmet <- merge(study_metadata_vmet, lc_rpos_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_hneg_vmet <- merge(study_metadata_vmet, lc_hneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+
+rm(study_metadata_vmet)
+rm(cst_metadata_vmet)
+```
+
+Overview of dataset dimensions
+```{r}
+# VMET LC-MS Lipid Negative Mode
+cat(paste("VMET LC-MS Lipid Negative Mode Matrix: ", dim(lc_lneg_vmet)[1], "samples, ", dim(lc_lneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_lneg_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Lipid Positive Mode
+cat(paste("VMET LC-MS Lipid Positive Mode Matrix: ", dim(lc_lpos_vmet)[1], "samples, ", dim(lc_lpos_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_lpos_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Reversed Phase Negative Mode
+cat(paste("VMET LC-MS Reversed Phase Negative Mode Matrix: ", dim(lc_rneg_vmet)[1], "samples, ", dim(lc_rneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_rneg_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Reversed Phase Positive Mode
+cat(paste("VMET LC-MS Reversed Phase Positive Mode Matrix: ", dim(lc_rpos_vmet)[1], "samples, ", dim(lc_rpos_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_rpos_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS HILIC Negative Mode
+cat(paste("VMET LC-MS HILIC Negative Mode Matrix: ", dim(lc_hneg_vmet)[1], "samples, ", dim(lc_hneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_hneg_first_metabolite_idx_vmet <- 28
+```
+
+Define a set of helper functions to handle the main comparisons.
+These are:
+  - CST I vs III:
+  - CST I vs IV:
+  - CST III vs IV:
+  - Multinomial Comparison of CST I, II, III, IV, V:
+  - Multinomial Comparison of CST I, III and IV
+  
+```{r}
+# I vs III
+random_forest_comparison_IvsIII <- function(dataset, first_metabo_idx) {
+  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
+  dataset_train$CST <- factor(dataset_train$CST)
+  dataset_train[is.na(dataset_train)] <- 0
+  
+  dataset_train <- subset(dataset_train, CST == 'I' | CST == 'III')
+  
+  dataset_train$CST <- droplevels(dataset_train$CST)
+  dataset_train$CST <- relevel(dataset_train$CST, 'I')
+  
+  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                           number = 7, summaryFunction=multiClassSummary, preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+  rf_fit <- train(CST ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+  
+  return (rf_fit)
+
+}
+
+# I vs IV
+random_forest_comparison_IvsIV <- function(dataset, first_metabo_idx) {
+  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
+  dataset_train$CST <- factor(dataset_train$CST)
+
+  dataset_train[is.na(dataset_train)] <- 0
+  
+  dataset_train <- subset(dataset_train, CST == 'I' | CST == 'IV')
+  
+  dataset_train$CST <- droplevels(dataset_train$CST)
+  dataset_train$CST <- relevel(dataset_train$CST, 'I')
+   
+  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                           number = 7, summaryFunction=multiClassSummary, 
+                           preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+  rf_fit <- train(CST ~ ., 
+                 data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', 
+                 tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+
+  
+  return (rf_fit)
+}
+
+# III vs IV
+random_forest_comparison_IIIvsIV <- function(dataset, first_metabo_idx) {
+  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
+  dataset_train$CST <- factor(dataset_train$CST)
+
+  dataset_train[is.na(dataset_train)] <- 0
+  
+  dataset_train <- subset(dataset_train, CST == 'III' | CST == 'IV')
+  
+  dataset_train$CST <- droplevels(dataset_train$CST)
+  dataset_train$CST <- relevel(dataset_train$CST, 'III')
+
+  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                           number = 7, summaryFunction=multiClassSummary, 
+                           preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+  rf_fit <- train(CST ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC',
+                  tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+
+  return (rf_fit)
+}
+
+# III vs V
+random_forest_comparison_IIIvsV <- function(dataset, first_metabo_idx) {
+  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
+  dataset_train$CST <- factor(dataset_train$CST)
+
+  dataset_train[is.na(dataset_train)] <- 0
+  
+  dataset_train <- subset(dataset_train, CST == 'III' | CST == 'V')
+  
+  dataset_train$CST <- droplevels(dataset_train$CST)
+  dataset_train$CST <- relevel(dataset_train$CST, 'III')
+
+  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                           number = 7, summaryFunction=multiClassSummary, 
+                           preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+  rf_fit <- train(CST ~ ., 
+                              data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC',
+                  tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+
+
+  
+  return (rf_fit)
+}
+
+# I vs V
+# Applies downsampling of CST I samples to match the number of CST IVs. All CST IV samples
+# are always used, but in each round of CV different CST III samples are sampled
+random_forest_comparison_IvsV <- function(dataset, first_metabo_idx) {
+  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
+  dataset_train$CST <- factor(dataset_train$CST)
+
+  dataset_train[is.na(dataset_train)] <- 0
+  
+  dataset_train <- subset(dataset_train, CST == 'I' | CST == 'V')
+  
+  dataset_train$CST <- droplevels(dataset_train$CST)
+  dataset_train$CST <- relevel(dataset_train$CST, 'V')
+
+  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                           number = 7, summaryFunction=multiClassSummary, 
+                           preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+  rf_fit <- train(CST ~ ., 
+                              data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC',
+                  tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+
+  return (rf_fit)
+}
+
+
+# All vs All,including II and V
+# "Multinomial" classification model, all classes at the same time
+random_forest_comparison_AllvsAll <- function(dataset, first_metabo_idx) {
+  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
+  # remove rare levels as
+  dataset_train$CST <- droplevels(dataset_train$CST)
+  dataset_train[is.na(dataset_train)] <- 0
+  
+  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                           number = 5, summaryFunction=multiClassSummary, 
+                           preProcOptions = c('center', 'scale', 'nzv'), savePredictions=TRUE)
+  rf_fit <- train(CST ~ ., 
+                data = dataset_train, method='rf', trControl=fit_control, metric='AUC', tuneGrid=data.frame(mtry=50))
+
+  
+  return (rf_fit)
+}
+
+# Helper function to calculate parameters for roc curves and generate quick plot
+get_roc <- function(model, levels, target) {
+  
+    #cv_original_class <- model$trainingData$.outcome
+    cv_original_class <- model$pred$obs
+    #cv_predictor_avg <- aggregate(as.formula(paste(target, "~ rowIndex")),model$pred,mean)[,target]
+    cv_predictor_avg <- model$pred[, target]
+    roc_test_set <- roc(cv_original_class, cv_predictor_avg, ci=TRUE)
+    roc_data <- data.frame(Class=cv_original_class,target=cv_predictor_avg)
+    roc_plot <- ggplot(roc_data, 
+    aes(m = target, d = factor(Class, levels = c(levels)), color='firebrick')) + guides(color = FALSE) + 
+    geom_roc(hjust = 0, vjust = 0) + coord_equal() + style_roc(theme=theme_grey, xlab='1 - Specificity', ylab='Sensitivity') +  annotate("label", x = .75, y = .25, 
+           label = paste("Mean AUC =", round(roc_test_set$auc, 2)), color='firebrick')
+    
+    return(list(data=roc_data, roc=roc_test_set, plot=roc_plot)) 
+}
+
+```
+# Detection of Lactobacillus Depleted State based on the DESI-MS profile.
+Can DESI-MS data be used to identify which swab samples come from women with a Lactobacillus Depleted State?
+To find out, we fit RandomForest Classifiers to discriminate between Lactobacillus Dominant or Depleted States. To validate the model, a repeated (n=15) stratified 7-fold cross-validation scheme is applied. Area under the curve and other metrics are calculated using samples from the test-sets.
+
+In this cell, the "Lactobacillus Dominant" or "Depleted" criteria used is based on the CST Hierarchical clustering assignment. Samples with a CST IV or VI (B.breve) are considered "Depleted".
+## Discrimination between CST I vs III
+Lactobacillus crispatus versus Lactobacillus iners.
+
+```{r}
+# Fit models to LC-MS Data
+IvsIII_lpos_vmet <- random_forest_comparison_IvsIII(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
+IvsIII_rpos_vmet <- random_forest_comparison_IvsIII(lc_rpos_vmet,  lc_rpos_first_metabolite_idx_vmet)
+IvsIII_rneg_vmet <- random_forest_comparison_IvsIII(lc_rneg_vmet,  lc_rneg_first_metabolite_idx_vmet)
+IvsIII_lneg_vmet <- random_forest_comparison_IvsIII(lc_lneg_vmet,  lc_lneg_first_metabolite_idx_vmet)
+IvsIII_hneg_vmet <- random_forest_comparison_IvsIII(lc_hneg_vmet,  lc_hneg_first_metabolite_idx_vmet)
+
+# save the model performance to .txt files
+capture.output(print(IvsIII_lpos_vmet), file='./CST_Comparisons_LC-MS/VMET_LPOS_RF_Model_IvsIII.txt')
+capture.output(print(IvsIII_rpos_vmet), file='./CST_Comparisons_LC-MS/VMET_RPOS_RF_Model_IvsIII.txt')
+capture.output(print(IvsIII_rneg_vmet), file='./CST_Comparisons_LC-MS/VMET_RNEG_RF_Model_IvsIII.txt')
+capture.output(print(IvsIII_lneg_vmet), file='./CST_Comparisons_LC-MS/VMET_LNEG_RF_Model_IvsIII.txt')
+capture.output(print(IvsIII_hneg_vmet), file='./CST_Comparisons_LC-MS/VMET_HNEG_RF_Model_IvsIII.txt')
+
+# ROC_Information
+lpos_roc_vmet <- get_roc(IvsIII_lpos_vmet, c('I', 'III'), 'III')
+rpos_roc_vmet <- get_roc(IvsIII_rpos_vmet, c('I', 'III'), 'III')
+rneg_roc_vmet <- get_roc(IvsIII_rneg_vmet, c('I', 'III'), 'III')
+lneg_roc_vmet <- get_roc(IvsIII_lneg_vmet, c('I', 'III'), 'III')
+hneg_roc_vmet <- get_roc(IvsIII_hneg_vmet, c('I', 'III'), 'III')
+
+ggsave(filename='./CST_Comparisons_LC-MS/LPOS_IvsIII_CST_ROC.png', lpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RPOS_IvsIII_CST_ROC.png', rpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IvsIII_CST_ROC.png', rneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IvsIII_CST_ROC.png', lneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IvsIII_CST_ROC.png', hneg_roc_vmet$plot)
+```
+
+```{r}
+# Fit models to LC-MS Data
+IvsIV_lpos_vmet <- random_forest_comparison_IvsIV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
+IvsIV_rpos_vmet <- random_forest_comparison_IvsIV(lc_rpos_vmet,  lc_rpos_first_metabolite_idx_vmet)
+IvsIV_rneg_vmet <- random_forest_comparison_IvsIV(lc_rneg_vmet,  lc_rneg_first_metabolite_idx_vmet)
+IvsIV_lneg_vmet <- random_forest_comparison_IvsIV(lc_lneg_vmet,  lc_lneg_first_metabolite_idx_vmet)
+IvsIV_hneg_vmet <- random_forest_comparison_IvsIV(lc_hneg_vmet,  lc_hneg_first_metabolite_idx_vmet)
+
+# save the model performance to .txt files
+capture.output(print(IvsIV_lpos_vmet), file='./CST_Comparisons_LC-MS/VMET_LPOS_RF_Model_IvsIV.txt')
+capture.output(print(IvsIV_rpos_vmet), file='./CST_Comparisons_LC-MS/VMET_RPOS_RF_Model_IvsIV.txt')
+capture.output(print(IvsIV_rneg_vmet), file='./CST_Comparisons_LC-MS/VMET_RNEG_RF_Model_IvsIV.txt')
+capture.output(print(IvsIV_lneg_vmet), file='./CST_Comparisons_LC-MS/VMET_LNEG_RF_Model_IvsIV.txt')
+capture.output(print(IvsIV_hneg_vmet), file='./CST_Comparisons_LC-MS/VMET_HNEG_RF_Model_IvsIV.txt')
+
+# ROC_Information
+lpos_roc_vmet <- get_roc(IvsIV_lpos_vmet, c('I', 'IV'), 'IV')
+rpos_roc_vmet <- get_roc(IvsIV_rpos_vmet, c('I', 'IV'), 'IV')
+rneg_roc_vmet <- get_roc(IvsIV_rneg_vmet, c('I', 'IV'), 'IV')
+lneg_roc_vmet <- get_roc(IvsIV_lneg_vmet, c('I', 'IV'), 'IV')
+hneg_roc_vmet <- get_roc(IvsIV_hneg_vmet, c('I', 'IV'), 'IV')
+
+ggsave(filename='./CST_Comparisons_LC-MS/LPOS_IvsIV_CST_ROC.png', lpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RPOS_IvsIV_CST_ROC.png', rpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IvsIV_CST_ROC.png', rneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IvsIV_CST_ROC.png', lneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IvsIV_CST_ROC.png', hneg_roc_vmet$plot)
+```
+
+```{r}
+# Fit models to LC-MS Data
+IIIvsIV_lpos_vmet <- random_forest_comparison_IIIvsIV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
+IIIvsIV_rpos_vmet <- random_forest_comparison_IIIvsIV(lc_rpos_vmet,  lc_rpos_first_metabolite_idx_vmet)
+IIIvsIV_rneg_vmet <- random_forest_comparison_IIIvsIV(lc_rneg_vmet,  lc_rneg_first_metabolite_idx_vmet)
+IIIvsIV_lneg_vmet <- random_forest_comparison_IIIvsIV(lc_lneg_vmet,  lc_lneg_first_metabolite_idx_vmet)
+IIIvsIV_hneg_vmet <- random_forest_comparison_IIIvsIV(lc_hneg_vmet,  lc_hneg_first_metabolite_idx_vmet)
+
+# save the model performance to .txt files
+capture.output(print(IIIvsIV_lpos_vmet), file='./CST_Comparisons_LC-MS/VMET_LPOS_RF_Model_IIIvsIV.txt')
+capture.output(print(IIIvsIV_rpos_vmet), file='./CST_Comparisons_LC-MS/VMET_RPOS_RF_Model_IIIvsIV.txt')
+capture.output(print(IIIvsIV_rneg_vmet), file='./CST_Comparisons_LC-MS/VMET_RNEG_RF_Model_IIIvsIV.txt')
+capture.output(print(IIIvsIV_lneg_vmet), file='./CST_Comparisons_LC-MS/VMET_LNEG_RF_Model_IIIvsIV.txt')
+capture.output(print(IIIvsIV_hneg_vmet), file='./CST_Comparisons_LC-MS/VMET_HNEG_RF_Model_IIIvsIV.txt')
+
+# ROC_Information
+lpos_roc_vmet <- get_roc(IIIvsIV_lpos_vmet, c('III', 'IV'), 'IV')
+rpos_roc_vmet <- get_roc(IIIvsIV_rpos_vmet, c('III', 'IV'), 'IV')
+rneg_roc_vmet <- get_roc(IIIvsIV_rneg_vmet, c('III', 'IV'), 'IV')
+lneg_roc_vmet <- get_roc(IIIvsIV_lneg_vmet, c('III', 'IV'), 'IV')
+hneg_roc_vmet <- get_roc(IIIvsIV_hneg_vmet, c('III', 'IV'), 'IV')
+
+ggsave(filename='./CST_Comparisons_LC-MS/LPOS_IIIvsIV_CST_ROC.png', lpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RPOS_IIIvsIV_CST_ROC.png', rpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IIIvsIV_CST_ROC.png', rneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IIIvsIV_CST_ROC.png', lneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IIIvsIV_CST_ROC.png', hneg_roc_vmet$plot)
+```
+```{r}
+# Fit models to LC-MS Data
+IIIvsV_lpos_vmet <- random_forest_comparison_IIIvsV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
+IIIvsV_rpos_vmet <- random_forest_comparison_IIIvsV(lc_rpos_vmet,  lc_rpos_first_metabolite_idx_vmet)
+IIIvsV_rneg_vmet <- random_forest_comparison_IIIvsV(lc_rneg_vmet,  lc_rneg_first_metabolite_idx_vmet)
+IIIvsV_lneg_vmet <- random_forest_comparison_IIIvsV(lc_lneg_vmet,  lc_lneg_first_metabolite_idx_vmet)
+IIIvsV_hneg_vmet <- random_forest_comparison_IIIvsV(lc_hneg_vmet,  lc_hneg_first_metabolite_idx_vmet)
+
+# save the model performance to .txt files
+capture.output(print(IIIvsV_lpos_vmet), file='./CST_Comparisons_LC-MS/VMET_LPOS_RF_Model_IIIvsV.txt')
+capture.output(print(IIIvsV_rpos_vmet), file='./CST_Comparisons_LC-MS/VMET_RPOS_RF_Model_IIIvsV.txt')
+capture.output(print(IIIvsV_rneg_vmet), file='./CST_Comparisons_LC-MS/VMET_RNEG_RF_Model_IIIvsV.txt')
+capture.output(print(IIIvsV_lneg_vmet), file='./CST_Comparisons_LC-MS/VMET_LNEG_RF_Model_IIIvsV.txt')
+capture.output(print(IIIvsV_hneg_vmet), file='./CST_Comparisons_LC-MS/VMET_HNEG_RF_Model_IIIvsV.txt')
+
+# ROC_Information
+lpos_roc_vmet <- get_roc(IIIvsV_lpos_vmet, c('III', 'V'), 'V')
+rpos_roc_vmet <- get_roc(IIIvsV_rpos_vmet, c('III', 'V'), 'V')
+rneg_roc_vmet <- get_roc(IIIvsV_rneg_vmet, c('III', 'V'), 'V')
+lneg_roc_vmet <- get_roc(IIIvsV_lneg_vmet, c('III', 'V'), 'V')
+hneg_roc_vmet <- get_roc(IIIvsV_hneg_vmet, c('III', 'V'), 'V')
+
+ggsave(filename='./CST_Comparisons_LC-MS/LPOS_IIIvsV_CST_ROC.png', lpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RPOS_IIIvsV_CST_ROC.png', rpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IIIvsV_CST_ROC.png', rneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IIIvsV_CST_ROC.png', lneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IIIvsV_CST_ROC.png', hneg_roc_vmet$plot)
+```
