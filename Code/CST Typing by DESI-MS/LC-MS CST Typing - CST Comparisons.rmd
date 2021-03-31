@@ -31,15 +31,15 @@ dir.create('./CST_Comparisons_LC-MS/Precision_Recall_Curves/', recursive=TRUE)
 Load the VMET LC-MS datasets
 ```{r, warning=F, echo=F, message=F}
 # Load the DESI-MS datasets
-lc_lneg_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_LNEG.csv", header=1, sep=',')
-lc_lpos_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_LPOS.csv", header=1, sep=',')
-lc_rneg_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_RNEG.csv", header=1, sep=',')
-lc_rpos_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_RPOS.csv", header=1, sep=',')
-lc_hneg_vmet <- read.table("../../Final Data for paper/LC-MS/VMET_LC-MS_HNEG.csv", header=1, sep=',')
+lc_lneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_LNEG.csv", header=1, sep=',')
+lc_lpos_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_LPOS.csv", header=1, sep=',')
+lc_rneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_RNEG.csv", header=1, sep=',')
+lc_rpos_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_RPOS.csv", header=1, sep=',')
+lc_hneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_HNEG.csv", header=1, sep=',')
 
 # Load the Study Metadata
-study_metadata_vmet <- read_csv("../../Final Data for paper/VMET_Metadata.csv")
-cst_metadata_vmet <- read_csv("../../Final Data for paper/VMET_CSTAssignment.csv")
+study_metadata_vmet <- read_csv("../../Data/VMET_Metadata.csv")
+cst_metadata_vmet <- read_csv("../../Data/VMET_CSTAssignment.csv")
 
 study_metadata_vmet <- merge(study_metadata_vmet, cst_metadata_vmet, by='Seq_ID')
 
