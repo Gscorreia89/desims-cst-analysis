@@ -1,0 +1,25 @@
+$emmeans
+LDominant_CST = LDepleted:
+ GestationalAge Outcome emmean     SE  df lower.CL upper.CL
+             22 Preterm  0.882 0.0585 216    0.767    0.998
+             22 Term     0.712 0.0382 188    0.636    0.787
+
+LDominant_CST = LDominant:
+ GestationalAge Outcome emmean     SE  df lower.CL upper.CL
+             22 Preterm  0.646 0.0336 150    0.579    0.712
+             22 Term     0.598 0.0206 139    0.557    0.638
+
+Degrees-of-freedom method: kenward-roger 
+Confidence level used: 0.95 
+
+$contrasts
+LDominant_CST = LDepleted:
+ contrast             estimate     SE  df t.ratio p.value
+ 22 Preterm - 22 Term   0.1708 0.0699 208 2.444   0.0154 
+
+LDominant_CST = LDominant:
+ contrast             estimate     SE  df t.ratio p.value
+ 22 Preterm - 22 Term   0.0483 0.0394 147 1.224   0.2229 
+
+Degrees-of-freedom method: kenward-roger 
+

@@ -1,0 +1,296 @@
+---
+title: "CST Typing by LC-MS - Detection of Lactobacillus Depleted Status"
+output: html_notebook
+---
+
+```{r "setup", include=FALSE}
+require("knitr")
+opts_knit$set(root.dir='./')
+```
+
+Load the required packages
+```{r, include=FALSE}
+library(ggplot2)
+library(doParallel)
+library(readr)
+library(reshape2)
+library(caret)
+library(plotROC)
+library(pROC)
+library(precrec)
+set.seed(57596)
+# Set ggplot titles to appear at center
+ggplot() + theme(plot.title = element_text(hjust = 'center'))
+registerDoParallel(cores=22)
+dir.create('./Lactobacillus_Depleted_Detection_LC-MS/', recursive=TRUE)
+dir.create('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/', recursive=TRUE)
+
+```
+
+# Data import
+Load the VMET LC-MS datasets
+```{r, warning=F, echo=F, message=F}
+# Load the DESI-MS datasets
+lc_lneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_LNEG.csv", header=1, sep=',')
+lc_lpos_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_LPOS.csv", header=1, sep=',')
+lc_rneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_RNEG.csv", header=1, sep=',')
+lc_rpos_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_RPOS.csv", header=1, sep=',')
+lc_hneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_HNEG.csv", header=1, sep=',')
+
+# Load the Study Metadata
+study_metadata_vmet <- read_csv("../../Data/VMET_Metadata.csv")
+cst_metadata_vmet <- read_csv("../../Data/VMET_CSTAssignment.csv")
+
+study_metadata_vmet <- merge(study_metadata_vmet, cst_metadata_vmet, by='Seq_ID')
+
+# Merge with the clinical metadata
+lc_lneg_vmet <- merge(study_metadata_vmet, lc_lneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_lpos_vmet <- merge(study_metadata_vmet, lc_lpos_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_rneg_vmet <- merge(study_metadata_vmet, lc_rneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_rpos_vmet <- merge(study_metadata_vmet, lc_rpos_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_hneg_vmet <- merge(study_metadata_vmet, lc_hneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+
+rm(study_metadata_vmet)
+rm(cst_metadata_vmet)
+```
+
+Overview of dataset dimensions
+```{r}
+# VMET LC-MS Lipid Negative Mode
+cat(paste("VMET LC-MS Lipid Negative Mode Matrix: ", dim(lc_lneg_vmet)[1], "samples, ", dim(lc_lneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_lneg_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Lipid Positive Mode
+cat(paste("VMET LC-MS Lipid Positive Mode Matrix: ", dim(lc_lpos_vmet)[1], "samples, ", dim(lc_lpos_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_lpos_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Reversed Phase Negative Mode
+cat(paste("VMET LC-MS Reversed Phase Negative Mode Matrix: ", dim(lc_rneg_vmet)[1], "samples, ", dim(lc_rneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_rneg_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Reversed Phase Positive Mode
+cat(paste("VMET LC-MS Reversed Phase Positive Mode Matrix: ", dim(lc_rpos_vmet)[1], "samples, ", dim(lc_rpos_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_rpos_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS HILIC Negative Mode
+cat(paste("VMET LC-MS HILIC Negative Mode Matrix: ", dim(lc_hneg_vmet)[1], "samples, ", dim(lc_hneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_hneg_first_metabolite_idx_vmet <- 28
+```
+
+# Detection of "Lactobacillus depleted" microbiome state using the LC-MS profiles.
+In this analysis, the LC-MS profiles from the VMET datasets are used to predict whether the microbial composition is dominated by Lactobacillus species ("LDominant", as in Lactobacillus Dominant) vs other species (LDepleted, or Lactobacillus Depleted). The *random_forest_comparison_LDepleted_CST* and *random_forest_comparison_LDepleted_RelativeAbundance* functions defined in the next cell handle the model fitting and cross-validation. The interface from the *caret* package is used to fit the random forest models and perform a repeated (n=15 times) 7-fold stratified cross validation.
+
+In the *_CST* suffixed function, the LDominant and LDepleted status are encoded as using the CST criteria (CST I, II, III and V = LDominant, IV and VI = LDepleted).
+
+For the *_RelativeAbundance* method the % of total 16S counts from the Lactobacillus genera is used as the cut-off criteria (LDominant = > 85 % Lactobacillus counts, as assigned in the "/16S Analysis/VMET2 16S Analysis - Community State Type analysis" and "/16S Analysis/VMET 16S Analysis - Community State Type analysis" Jupyter notebooks). 
+```{r}
+# Lactobacillus depleted "LDepleted" (CST IV only) vs Lactobacillus dominant "LDominant" (CST I, II, III and V)
+random_forest_comparison_LDepleted_CST <- function(dataset, first_metabo_idx) {
+   dataset_train <- dataset[, colnames(dataset)[first_metabo_idx:dim(dataset)[2]]]
+   dataset_train <- cbind(LDepleted=dataset$LDominant_CST, dataset_train)
+   # Replace NA's with 0 - shouldn't be necessary 
+   #dataset_train[is.na(dataset_train)] <- 0
+   
+   dataset_train$LDepleted <- factor(dataset_train$LDepleted)
+   
+   fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                              number = 7, summaryFunction=multiClassSummary, 
+                              preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+    # mtry set to fix rule of thumb value 1/3 of nfeatures
+   rf_fit <- train(LDepleted ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+   
+  return (rf_fit)
+}
+
+# Lactobacillus depleted "LDepleted" (CST IV only) vs Lactobacillus dominant "LDominant" (CST I, II, III and V)
+random_forest_comparison_LDepleted_RelativeAbundance <- function(dataset, first_metabo_idx) {
+   
+   dataset_train <- dataset[, colnames(dataset)[first_metabo_idx:dim(dataset)[2]]]
+   dataset_train <- cbind(LDepleted=dataset$LDominant_RelAbundance, dataset_train)
+   # Replace NA's with 0 - shouldn't be necessary 
+   #dataset_train[is.na(dataset_train)] <- 0
+   
+   dataset_train$LDepleted <- factor(dataset_train$LDepleted)
+   
+   fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                              number = 7, summaryFunction=multiClassSummary, 
+                              preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+   # mtry set to fix rule of thumb value 1/3 of nfeatures
+   rf_fit <- train(LDepleted ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+   
+  return (rf_fit)
+}
+
+
+# Helper function to calculate parameters for roc curves and generate quick plots for inspection
+get_roc <- function(model, levels, target) {
+  
+    #cv_original_class <- model$trainingData$.outcome
+    cv_original_class <- model$pred$obs
+    #cv_predictor_avg <- aggregate(as.formula(paste(target, "~ rowIndex")),model$pred,mean)[,target]
+    cv_predictor_avg <- model$pred[, target]
+    roc_test_set <- roc(cv_original_class, cv_predictor_avg, ci=TRUE)
+    roc_data <- data.frame(Class=cv_original_class,target=cv_predictor_avg)
+    roc_plot <- ggplot(roc_data, 
+    aes(m = target, d = factor(Class, levels = c(levels)), color='firebrick')) + guides(color = FALSE) + 
+    geom_roc(hjust = 0, vjust = 0) + coord_equal() + style_roc(theme=theme_grey, xlab='1 - Specificity', ylab='Sensitivity') +  annotate("label", x = .75, y = .25, 
+           label = paste("Mean AUC =", round(roc_test_set$auc, 2)), color='firebrick')
+    
+    return(list(data=roc_data, roc=roc_test_set, plot=roc_plot)) 
+}
+
+```
+
+# Detection of Lactobacillus depleted state based on the LC-MS metabolic profiles.
+Can metabolic profiling data, more specifically LC-MS assays, be used to predict the cervicovaginal microbiome status and discriminate Lactobacillus dominant vs Lactobacillus depleted status? 
+To test this hypothesis, we train random forest classifiers to predict microbial composition (Y - target) from the LC-MS metabolic profiles (X). This is done in the VMET cohorts, using each LC-MS ionisation mode datasets independently. Models were validated with a repeated (n=15) stratified 7-fold cross-validation scheme, with area under the curve and other metrics calculated using only samples in the external cross-validation test-sets.
+
+In this cell, the "Lactobacillus Dominant" or "Depleted" criteria used is based on the CST hierarchical clustering assignment. Samples with a CST IV or VI (B.breve) are considered "LDepleted", and all other CST as "LDominant".
+```{r}
+# Fit models to VMET LC-MS datasets
+LDepleted_lneg_vmet <- random_forest_comparison_LDepleted_CST(lc_lneg_vmet, lc_lneg_first_metabolite_idx_vmet)
+LDepleted_lpos_vmet <- random_forest_comparison_LDepleted_CST(lc_lpos_vmet, lc_lpos_first_metabolite_idx_vmet)
+LDepleted_rpos_vmet <- random_forest_comparison_LDepleted_CST(lc_rpos_vmet, lc_rpos_first_metabolite_idx_vmet)
+LDepleted_rneg_vmet <- random_forest_comparison_LDepleted_CST(lc_rneg_vmet, lc_rneg_first_metabolite_idx_vmet)
+LDepleted_hneg_vmet <- random_forest_comparison_LDepleted_CST(lc_hneg_vmet, lc_hneg_first_metabolite_idx_vmet)
+
+# save the model performance to .txt files
+capture.output(print(LDepleted_lneg_vmet), file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_LCMS_LNEG_RF_Model.txt')
+capture.output(print(LDepleted_lpos_vmet), file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_LCMS_LPOS_RF_Model.txt')
+capture.output(print(LDepleted_rneg_vmet), file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_LCMS_RNEG_RF_Model.txt')
+capture.output(print(LDepleted_rpos_vmet), file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_LCMS_RPOS_RF_Model.txt')
+capture.output(print(LDepleted_hneg_vmet), file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_LCMS_HNEG_RF_Model.txt')
+
+# ROC_Information
+lneg_roc_vmet <- get_roc(LDepleted_lneg_vmet, c('LDominant', 'LDepleted'), 'LDominant')
+lpos_roc_vmet <- get_roc(LDepleted_lpos_vmet, c('LDominant', 'LDepleted'), 'LDominant')
+rneg_roc_vmet <- get_roc(LDepleted_rneg_vmet, c('LDominant', 'LDepleted'), 'LDominant')
+rpos_roc_vmet <- get_roc(LDepleted_rpos_vmet, c('LDominant', 'LDepleted'), 'LDominant')
+hneg_roc_vmet <- get_roc(LDepleted_hneg_vmet, c('LDominant', 'LDepleted'), 'LDominant')
+
+ggsave(filename='./Lactobacillus_Depleted_Detection_LC-MS/LC-MS_LNEG_LactobacillusDepleted_CST_ROC.png', lneg_roc_vmet$plot)
+ggsave(filename='./Lactobacillus_Depleted_Detection_LC-MS/LC-MS_LPOS_LactobacillusDepleted_CST_ROC.png', lpos_roc_vmet$plot)
+ggsave(filename='./Lactobacillus_Depleted_Detection_LC-MS/LC-MS_RNEG_LactobacillusDepleted_CST_ROC.png', rneg_roc_vmet$plot)
+ggsave(filename='./Lactobacillus_Depleted_Detection_LC-MS/LC-MS_RPOS_LactobacillusDepleted_CST_ROC.png', rpos_roc_vmet$plot)
+ggsave(filename='./Lactobacillus_Depleted_Detection_LC-MS/LC-MS_HNEG_LactobacillusDepleted_CST_ROC.png', hneg_roc_vmet$plot)
+
+rm(pos_roc_data_vmet2)
+rm(neg_roc_data_vmet2)
+rm(pos_roc_data_vmet)
+rm(neg_roc_data_vmet)
+```
+
+# Analysis of model predictions and classification uncertainty
+After the model is trained we can assess individual predictions and misclassified samples. We use Out-of-bag (OOB) predictions to obtain a single prediction from 
+the random forest classifier models.
+This information is used in Supplementary data Figures 4 and 5.
+
+## Analysis of sample misclassifications
+### LC-MS all modes predictions
+```{r}
+HNeg_VMET_RFModel <- LDepleted_hneg_vmet$finalModel
+LNeg_VMET_RFModel <- LDepleted_lneg_vmet$finalModel
+LPos_VMET_RFModel <- LDepleted_lpos_vmet$finalModel
+RNeg_VMET_RFModel <- LDepleted_rneg_vmet$finalModel
+RPos_VMET_RFModel <- LDepleted_rpos_vmet$finalModel
+
+oob_prediction_VMET_HNEG<- predict(HNeg_VMET_RFModel)
+oob_prediction_VMET_probability_HNEG <- predict(HNeg_VMET_RFModel, type='prob')
+
+oob_prediction_VMET_LNEG <- predict(LNeg_VMET_RFModel)
+oob_prediction_VMET_probability_LNEG <- predict(LNeg_VMET_RFModel, type='prob')
+
+oob_prediction_VMET_LPOS <- predict(LPos_VMET_RFModel)
+oob_prediction_VMET_probability_LPOS <- predict(LPos_VMET_RFModel, type='prob')
+
+oob_prediction_VMET_RNEG <- predict(RNeg_VMET_RFModel)
+oob_prediction_VMET_probability_RNEG <- predict(RNeg_VMET_RFModel, type='prob')
+
+oob_prediction_VMET_RPOS <- predict(RPos_VMET_RFModel)
+oob_prediction_VMET_probability_RPOS <- predict(RPos_VMET_RFModel, type='prob')
+
+# Subset only the relevant metadata and add an LDepleted/LDominant factor
+# HNEG
+vmet_Metatadata_hneg <- lc_hneg_vmet[, c("DESI_ID", "Seq_ID", "CST", "LDominant_CST", "LDominant_RelAbundance", "LactobacillusPercentage", "SubjectID", "Timepoint", "Outcome", "GestationalAge", "Ethnicity")]
+
+vmet_prediction_results_hneg <- cbind(vmet_Metatadata_hneg, ModelOOBPrediction=oob_prediction_VMET_HNEG, ModelOOBDepletedProb=oob_prediction_VMET_probability_HNEG[, 1], ModelOOBDominantProb=oob_prediction_VMET_probability_HNEG[, 2])
+vmet_prediction_results_hneg$Misclassified <- vmet_prediction_results_hneg$LDominant_CST != vmet_prediction_results_hneg$ModelOOBPrediction
+
+#LNEG
+vmet_Metatadata_lneg <- lc_lneg_vmet[, c("DESI_ID", "Seq_ID", "CST", "LDominant_CST", "LDominant_RelAbundance", "LactobacillusPercentage", "SubjectID", "Timepoint", "Outcome", "GestationalAge", "Ethnicity")]
+
+vmet_prediction_results_lneg <- cbind(vmet_Metatadata_lneg, ModelOOBPrediction=oob_prediction_VMET_LNEG, ModelOOBDepletedProb=oob_prediction_VMET_probability_LNEG[, 1], ModelOOBDominantProb=oob_prediction_VMET_probability_LNEG[, 2])
+vmet_prediction_results_lneg$Misclassified <- vmet_prediction_results_lneg$LDominant_CST != vmet_prediction_results_lneg$ModelOOBPrediction
+
+# LPOS
+vmet_Metatadata_lpos <- lc_lpos_vmet[, c("DESI_ID", "Seq_ID", "CST", "LDominant_CST", "LDominant_RelAbundance", "LactobacillusPercentage", "SubjectID", "Timepoint", "Outcome", "GestationalAge", "Ethnicity")]
+
+vmet_prediction_results_lpos <- cbind(vmet_Metatadata_lpos, ModelOOBPrediction=oob_prediction_VMET_LPOS, ModelOOBDepletedProb=oob_prediction_VMET_probability_LPOS[, 1], ModelOOBDominantProb=oob_prediction_VMET_probability_LPOS[, 2])
+vmet_prediction_results_lpos$Misclassified <- vmet_prediction_results_lpos$LDominant_CST != vmet_prediction_results_lpos$ModelOOBPrediction
+
+# RPOS
+vmet_Metatadata_rpos <- lc_rpos_vmet[, c("DESI_ID", "Seq_ID", "CST", "LDominant_CST", "LDominant_RelAbundance", "LactobacillusPercentage", "SubjectID", "Timepoint", "Outcome", "GestationalAge", "Ethnicity")]
+
+vmet_prediction_results_rpos <- cbind(vmet_Metatadata_rpos, ModelOOBPrediction=oob_prediction_VMET_RPOS, ModelOOBDepletedProb=oob_prediction_VMET_probability_RPOS[, 1], ModelOOBDominantProb=oob_prediction_VMET_probability_RPOS[, 2])
+vmet_prediction_results_rpos$Misclassified <- vmet_prediction_results_rpos$LDominant_CST != vmet_prediction_results_rpos$ModelOOBPrediction
+
+# RNEG
+vmet_Metatadata_rneg <- lc_rneg_vmet[, c("DESI_ID", "Seq_ID", "CST", "LDominant_CST", "LDominant_RelAbundance", "LactobacillusPercentage", "SubjectID", "Timepoint", "Outcome", "GestationalAge", "Ethnicity")]
+
+vmet_prediction_results_rneg <- cbind(vmet_Metatadata_rneg, ModelOOBPrediction=oob_prediction_VMET_RNEG, ModelOOBDepletedProb=oob_prediction_VMET_probability_RNEG[, 1], ModelOOBDominantProb=oob_prediction_VMET_probability_RNEG[, 2])
+vmet_prediction_results_rneg$Misclassified <- vmet_prediction_results_rneg$LDominant_CST != vmet_prediction_results_rneg$ModelOOBPrediction
+
+write.csv(x = vmet_prediction_results_hneg,file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_FinalModelLDepleted_HNEG_Predictions.csv')
+write.csv(x = vmet_prediction_results_lpos,file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_FinalModelLDepleted_LPOS_Predictions.csv')
+write.csv(x = vmet_prediction_results_lneg,file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_FinalModelLDepleted_LNEG_Predictions.csv')
+write.csv(x = vmet_prediction_results_rpos,file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_FinalModelLDepleted_RPOS_Predictions.csv')
+write.csv(x = vmet_prediction_results_rneg,file='./Lactobacillus_Depleted_Detection_LC-MS/VMET_FinalModelLDepleted_RNEG_Predictions.csv')
+
+```
+
+## Precision-Recall curves
+The code in this cell generates precision-recall curves for the LDominant and LDepleted class for each of the LC-MS datasets. These figures form part of Supplementary Data Figure 3.
+```{r}
+# HILIC-negative mode
+mmdata_hneg_Ldep <- mmdata(vmet_prediction_results_hneg$ModelOOBDepletedProb, vmet_prediction_results_hneg$LDominant_CST, modnames = c("LDepleted"), posclass = 'LDepleted')
+mmdata_hneg_Ldom <- mmdata(vmet_prediction_results_hneg$ModelOOBDominantProb, vmet_prediction_results_hneg$LDominant_CST, modnames = c("LDominant"), posclass = 'LDominant')
+
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDom_HNEG.png', autoplot(evalmod(mmdata_hneg_Ldom), 'prc'))
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDep_HNEG.png', autoplot(evalmod(mmdata_hneg_Ldep), 'prc'))
+
+# Lipidomic negative mode
+mmdata_lneg_Ldep <- mmdata(vmet_prediction_results_lneg$ModelOOBDepletedProb, vmet_prediction_results_lneg$LDominant_CST, modnames = c("LDepleted"), posclass = 'LDepleted')
+mmdata_lneg_Ldom <- mmdata(vmet_prediction_results_lneg$ModelOOBDominantProb, vmet_prediction_results_lneg$LDominant_CST, modnames = c("LDominant"), posclass = 'LDominant')
+
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDom_LNEG.png', autoplot(evalmod(mmdata_lneg_Ldom), 'prc'))
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDep_LNEG.png', autoplot(evalmod(mmdata_lneg_Ldep), 'prc'))
+
+# Lipidomic positive mode
+mmdata_lpos_Ldep <- mmdata(vmet_prediction_results_lpos$ModelOOBDepletedProb, vmet_prediction_results_lpos$LDominant_CST, modnames = c("LDepleted"), posclass = 'LDepleted')
+mmdata_lpos_Ldom <- mmdata(vmet_prediction_results_lpos$ModelOOBDominantProb, vmet_prediction_results_lpos$LDominant_CST, modnames = c("LDominant"), posclass = 'LDominant')
+
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDom_LPOS.png', autoplot(evalmod(mmdata_lpos_Ldom), 'prc'))
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDep_LPOS.png', autoplot(evalmod(mmdata_lpos_Ldep), 'prc'))
+
+# Reversed-phase negative mode
+mmdata_rneg_Ldep <- mmdata(vmet_prediction_results_rneg$ModelOOBDepletedProb, vmet_prediction_results_rneg$LDominant_CST, modnames = c("LDepleted"), posclass = 'LDepleted')
+mmdata_rneg_Ldom <- mmdata(vmet_prediction_results_rneg$ModelOOBDominantProb, vmet_prediction_results_rneg$LDominant_CST, modnames = c("LDominant"), posclass = 'LDominant')
+
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDom_RNEG.png', autoplot(evalmod(mmdata_rneg_Ldom), 'prc'))
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDep_RNEG.png', autoplot(evalmod(mmdata_rneg_Ldep), 'prc'))
+
+# Reversed-phase positive mode
+mmdata_rpos_Ldep <- mmdata(vmet_prediction_results_rpos$ModelOOBDepletedProb, vmet_prediction_results_rpos$LDominant_CST, modnames = c("LDepleted"), posclass = 'LDepleted')
+mmdata_rpos_Ldom <- mmdata(vmet_prediction_results_rpos$ModelOOBDominantProb, vmet_prediction_results_rpos$LDominant_CST, modnames = c("LDominant"), posclass = 'LDominant')
+
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDom_RPOS.png', autoplot(evalmod(mmdata_rpos_Ldom), 'prc'))
+ggsave('./Lactobacillus_Depleted_Detection_LC-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDep_RPOS.png', autoplot(evalmod(mmdata_rpos_Ldep), 'prc'))
+```
+

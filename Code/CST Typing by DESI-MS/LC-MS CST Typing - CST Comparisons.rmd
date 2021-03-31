@@ -21,7 +21,7 @@ library(precrec)
 set.seed(57596)
 # Set ggplot titles to appear at center
 ggplot() + theme(plot.title = element_text(hjust = 'center'))
-registerDoParallel(cores=30)
+registerDoParallel(cores=22)
 dir.create('./CST_Comparisons_LC-MS/', recursive=TRUE)
 dir.create('./CST_Comparisons_LC-MS/Precision_Recall_Curves/', recursive=TRUE)
 
@@ -82,13 +82,9 @@ cat(paste("VMET LC-MS HILIC Negative Mode Matrix: ", dim(lc_hneg_vmet)[1], "samp
 lc_hneg_first_metabolite_idx_vmet <- 28
 ```
 
-Define a set of helper functions to handle the main comparisons.
-These are:
-  - CST I vs III:
-  - CST I vs IV:
-  - CST III vs IV:
-  - Multinomial Comparison of CST I, II, III, IV, V:
-  - Multinomial Comparison of CST I, III and IV
+# Discrimination of CST types from each other based on their LC-MS metabolic profiles
+In this analysis we examine if the LC-MS profiles are significantly different and can be to discriminate between individual Community State Types (CST). A series of functions defined in the next cell will handle the model fitting and cross-validation for each specific comparison (IvsIII, IvsIV, IIIvsV, IIIvsIV, IvsV). 
+The interface from the *caret* package is used to fit the random forest models and perform repeated (n=15 times) 7-fold stratified cross validation.
   
 ```{r}
 # I vs III
@@ -181,8 +177,6 @@ random_forest_comparison_IIIvsV <- function(dataset, first_metabo_idx) {
 }
 
 # I vs V
-# Applies downsampling of CST I samples to match the number of CST IVs. All CST IV samples
-# are always used, but in each round of CV different CST III samples are sampled
 random_forest_comparison_IvsV <- function(dataset, first_metabo_idx) {
   dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
   dataset_train$CST <- factor(dataset_train$CST)
@@ -205,24 +199,6 @@ random_forest_comparison_IvsV <- function(dataset, first_metabo_idx) {
 }
 
 
-# All vs All,including II and V
-# "Multinomial" classification model, all classes at the same time
-random_forest_comparison_AllvsAll <- function(dataset, first_metabo_idx) {
-  dataset_train <- dataset[, c('CST', colnames(dataset)[first_metabo_idx:dim(dataset)[2]])]
-  # remove rare levels as
-  dataset_train$CST <- droplevels(dataset_train$CST)
-  dataset_train[is.na(dataset_train)] <- 0
-  
-  fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
-                           number = 5, summaryFunction=multiClassSummary, 
-                           preProcOptions = c('center', 'scale', 'nzv'), savePredictions=TRUE)
-  rf_fit <- train(CST ~ ., 
-                data = dataset_train, method='rf', trControl=fit_control, metric='AUC', tuneGrid=data.frame(mtry=50))
-
-  
-  return (rf_fit)
-}
-
 # Helper function to calculate parameters for roc curves and generate quick plot
 get_roc <- function(model, levels, target) {
   
@@ -241,11 +217,7 @@ get_roc <- function(model, levels, target) {
 }
 
 ```
-# Detection of Lactobacillus Depleted State based on the DESI-MS profile.
-Can DESI-MS data be used to identify which swab samples come from women with a Lactobacillus Depleted State?
-To find out, we fit RandomForest Classifiers to discriminate between Lactobacillus Dominant or Depleted States. To validate the model, a repeated (n=15) stratified 7-fold cross-validation scheme is applied. Area under the curve and other metrics are calculated using samples from the test-sets.
 
-In this cell, the "Lactobacillus Dominant" or "Depleted" criteria used is based on the CST Hierarchical clustering assignment. Samples with a CST IV or VI (B.breve) are considered "Depleted".
 ## Discrimination between CST I vs III
 Lactobacillus crispatus versus Lactobacillus iners.
 
@@ -278,6 +250,8 @@ ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IvsIII_CST_ROC.png', lneg_roc_vmet
 ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IvsIII_CST_ROC.png', hneg_roc_vmet$plot)
 ```
 
+## Discrimination between CST I vs IV
+Lactobacillus crispatus (CST I) versus CST IV
 ```{r}
 # Fit models to LC-MS Data
 IvsIV_lpos_vmet <- random_forest_comparison_IvsIV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
@@ -307,6 +281,8 @@ ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IvsIV_CST_ROC.png', lneg_roc_vmet$
 ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IvsIV_CST_ROC.png', hneg_roc_vmet$plot)
 ```
 
+## Discrimination between CST III vs IV
+Lactobacillus iners (CST III) versus CST IV
 ```{r}
 # Fit models to LC-MS Data
 IIIvsIV_lpos_vmet <- random_forest_comparison_IIIvsIV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
@@ -335,6 +311,9 @@ ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IIIvsIV_CST_ROC.png', rneg_roc_vme
 ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IIIvsIV_CST_ROC.png', lneg_roc_vmet$plot)
 ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IIIvsIV_CST_ROC.png', hneg_roc_vmet$plot)
 ```
+
+## Discrimination between CST III vs IV
+Lactobacillus iners (CST III) versus Lactobacillus crispatus (CST I)
 ```{r}
 # Fit models to LC-MS Data
 IIIvsV_lpos_vmet <- random_forest_comparison_IIIvsV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
@@ -362,4 +341,36 @@ ggsave(filename='./CST_Comparisons_LC-MS/RPOS_IIIvsV_CST_ROC.png', rpos_roc_vmet
 ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IIIvsV_CST_ROC.png', rneg_roc_vmet$plot)
 ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IIIvsV_CST_ROC.png', lneg_roc_vmet$plot)
 ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IIIvsV_CST_ROC.png', hneg_roc_vmet$plot)
+```
+
+## Discrimination between CST I vs V
+Lactobacillus crispatus (CST I) versus Lactobacillus jensenii (CST V)
+
+```{r}
+# Fit models to LC-MS Data
+IvsV_lpos_vmet <- random_forest_comparison_IvsV(lc_lpos_vmet,  lc_lpos_first_metabolite_idx_vmet)
+IvsV_rpos_vmet <- random_forest_comparison_IvsV(lc_rpos_vmet,  lc_rpos_first_metabolite_idx_vmet)
+IvsV_rneg_vmet <- random_forest_comparison_IvsV(lc_rneg_vmet,  lc_rneg_first_metabolite_idx_vmet)
+IvsV_lneg_vmet <- random_forest_comparison_IvsV(lc_lneg_vmet,  lc_lneg_first_metabolite_idx_vmet)
+IvsV_hneg_vmet <- random_forest_comparison_IvsV(lc_hneg_vmet,  lc_hneg_first_metabolite_idx_vmet)
+
+# save the model performance to .txt files
+capture.output(print(IvsV_lpos_vmet), file='./CST_Comparisons_LC-MS/VMET_LPOS_RF_Model_IvsV.txt')
+capture.output(print(IvsV_rpos_vmet), file='./CST_Comparisons_LC-MS/VMET_RPOS_RF_Model_IvsV.txt')
+capture.output(print(IvsV_rneg_vmet), file='./CST_Comparisons_LC-MS/VMET_RNEG_RF_Model_IvsV.txt')
+capture.output(print(IvsV_lneg_vmet), file='./CST_Comparisons_LC-MS/VMET_LNEG_RF_Model_IvsV.txt')
+capture.output(print(IvsV_hneg_vmet), file='./CST_Comparisons_LC-MS/VMET_HNEG_RF_Model_IvsV.txt')
+
+# ROC_Information
+lpos_roc_vmet <- get_roc(IvsV_lpos_vmet, c('I', 'V'), 'V')
+rpos_roc_vmet <- get_roc(IvsV_rpos_vmet, c('I', 'V'), 'V')
+rneg_roc_vmet <- get_roc(IvsV_rneg_vmet, c('I', 'V'), 'V')
+lneg_roc_vmet <- get_roc(IvsV_lneg_vmet, c('I', 'V'), 'V')
+hneg_roc_vmet <- get_roc(IvsV_hneg_vmet, c('I', 'V'), 'V')
+
+ggsave(filename='./CST_Comparisons_LC-MS/LPOS_IvsV_CST_ROC.png', lpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RPOS_IvsV_CST_ROC.png', rpos_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/RNEG_IvsV_CST_ROC.png', rneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/LNEG_IvsV_CST_ROC.png', lneg_roc_vmet$plot)
+ggsave(filename='./CST_Comparisons_LC-MS/HNEG_IvsV_CST_ROC.png', hneg_roc_vmet$plot)
 ```

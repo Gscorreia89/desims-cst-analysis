@@ -1,0 +1,768 @@
+---
+title: "VMET2 - Analysis of inflammatory markers and immune-metabolic interactions"
+output: html_notebook
+---
+
+```{r "setup", include=FALSE}
+require("knitr")
+opts_knit$set(root.dir='./')
+```
+
+Load the required packages and set up directories
+```{r, include=FALSE}
+library(lme4)
+library(ggplot2)
+library(doParallel)
+library(reshape2)
+library(emmeans)
+library(readr)
+library(caret)
+library(xlsx)
+library(dplyr)
+set.seed(53927)
+
+# Set ggplot titles to appear at center
+ggplot() + theme(plot.title = element_text(hjust = 'center'))
+registerDoParallel(cores=22)
+
+dir.create('./CVF_ImmuneMarkers_Analysis/', recursive=TRUE)
+dir.create('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/', recursive=TRUE)
+```
+
+Load the immune marker Values and MS data matrices. Only the VMET2 dataset has immune mediator data
+```{r, message=FALSE, warning=FALSE}
+#study_metadata <- read_csv("../Data/VMET2_Cohort_Metadata_CST.csv")
+study_metadata_vmet2 <- read_csv("../../Data/VMET2_Metadata.csv")
+cst_assignments_vmet2  <- read_csv("../../Data/VMET2_CSTAssignment.csv")
+
+immune_data <- read_csv("../../Data/VMET2_CytokinesComplete.csv")
+
+desi_neg_vmet2 <- read_csv("../../Data/VMET2_DESI-MS_NEG.csv")
+desi_pos_vmet2 <- read_csv("../../Data/VMET2_DESI-MS_POS.csv")
+
+
+desi_neg_vmet2 <- merge(immune_data, desi_neg_vmet2, by='Seq_ID')
+desi_pos_vmet2 <- merge(immune_data, desi_pos_vmet2, by='Seq_ID')
+
+desi_neg_vmet2 <- merge(study_metadata_vmet2, desi_neg_vmet2, by='Seq_ID')
+desi_pos_vmet2 <- merge(study_metadata_vmet2, desi_pos_vmet2, by='Seq_ID')
+
+desi_neg_vmet2 <- merge(cst_assignments_vmet2, desi_neg_vmet2, by='Seq_ID')
+desi_pos_vmet2 <- merge(cst_assignments_vmet2, desi_pos_vmet2, by='Seq_ID')
+
+# Load the data QC results and exclude samples with low spectral quality
+desi_neg_vmet2_QC <- read.table("../CST Typing by DESI-MS/DESI-MS QC/VMET2_DESI_Negative_QC.csv", header=1, sep=',')
+desi_pos_vmet2_QC <- read.table("../CST Typing by DESI-MS/DESI-MS QC/VMET2_DESI_Positive_QC.csv", header=1, sep=',')
+
+# Exclude the samples flagged in the DESI-MS Data QC Notebook
+neg_vmet2_exclusions <- desi_neg_vmet2_QC[desi_neg_vmet2_QC$Exclude == TRUE, 'DESI_ID']
+pos_vmet2_exclusions <- desi_pos_vmet2_QC[desi_pos_vmet2_QC$Exclude == TRUE, 'DESI_ID']
+desi_neg_vmet2 <- desi_neg_vmet2[!(desi_neg_vmet2$DESI_ID %in% neg_vmet2_exclusions), ]
+desi_pos_vmet2 <- desi_pos_vmet2[!(desi_pos_vmet2$DESI_ID %in% pos_vmet2_exclusions), ]
+
+rm(cst_assignments_vmet2)
+rm(study_metadata_vmet2)
+rm(immune_data)
+rm(clr_16s_vmet2)
+rm(desi_neg_vmet2_QC)
+rm(desi_pos_vmet2_QC)
+rm(neg_vmet2_exclusions)
+rm(pos_vmet2_exclusions)
+```
+
+Overview of dataset dimensions and selection indexes
+```{r}
+# Id's of first metabolites in the DESI data frame
+desi_pos_first_metabolite_idx_vmet2 <- 52
+desi_neg_first_metabolite_idx_vmet2 <- 52
+# column indexes of the immune marker data
+cytokines_idx <- 29:50
+
+rownames(desi_neg_vmet2) <- NULL
+rownames(desi_pos_vmet2) <- NULL
+
+immune_matrix <- desi_neg_vmet2[, cytokines_idx]
+metabo_matrix <- desi_neg_vmet2[, desi_neg_first_metabolite_idx_vmet2:dim(desi_neg_vmet2)[2]]
+
+immune_matrix_pos <- desi_pos_vmet2[, cytokines_idx]
+metabo_matrix_pos <- desi_pos_vmet2[, desi_pos_first_metabolite_idx_vmet2:dim(desi_pos_vmet2)[2]]
+```
+
+# Random Forest Regressor models to predict Immune Marker levels
+To assess if the DESI-MS profiles capture variability associated with mucosal inflammation and host immune response, we will train a series of 
+random forest regressor models against the log transformed values of the immune markers and cytokines. The next cell defines a function to train and perform repeated (n=15) 7-fold cross validation of the random forest models.
+```{r}
+RF_PredictImmuneMarker <- function(immune_matrix, metabo_matrix, yvar) {
+
+    rf_dataset <- cbind(immune_matrix[, yvar], metabo_matrix)
+    
+    #current_marker <- colnames(immune_matrix)[yvar]
+    current_marker <- make.names(colnames(immune_matrix)[yvar])
+
+    colnames(rf_dataset)[1] <- current_marker
+    # Set NA's to 0. (only 1 in C3b/C3)
+    rf_dataset[is.na(rf_dataset)] <- 0
+ 
+    fit_control <- trainControl(method = "repeatedcv", repeats=15,
+                           number = 7, summaryFunction=defaultSummary, 
+                           preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+
+    
+    rf_fit <- train(as.formula(paste0("log(",current_marker,  " + 1) ~ .")), data = rf_dataset, 
+    method='rf', ntree=1000, trControl=fit_control, tuneGrid=data.frame(mtry=floor(sqrt(dim(rf_dataset)[2]))))
+
+  return(rf_fit)
+}
+```
+
+Train random forest regressors models to predict immune marker levels using the DESI-MS Negative mode spectra
+```{r}
+cytokine_models <- c()
+
+for (cytokine in 1:dim(immune_matrix)[2]) {
+  
+#for (cytokine in 1:3) {
+  current_RFModel <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, cytokine)
+  cytokine_models <- rbind(cytokine_models, cbind(ImmuneMarker=colnames(immune_matrix)[cytokine], current_RFModel$results))
+}
+    
+write.csv(cytokine_models, './CVF_ImmuneMarkers_Analysis/VMET2 RF_Regressor_Immune_DESI_NEG.csv')
+```
+
+Train random forest regressors models to predict immune marker levels using the DESI-MS Positive mode spectra
+```{r}
+cytokine_models <- c()
+    
+for (cytokine in 1:dim(immune_matrix_pos)[2]) {
+    
+#for (cytokine in 1:3) {
+  current_RFModel <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, cytokine)
+    
+  cytokine_models <- rbind(cytokine_models, cbind(ImmuneMarker=colnames(immune_matrix_pos)[cytokine], current_RFModel$results))
+  
+}
+
+write.csv(cytokine_models, './CVF_ImmuneMarkers_Analysis/VMET2 RF_Regressor_Immune_DESI_POS.csv')
+```
+
+# Immune ~ Metabolite Regression models
+To identify which individual features in the DESI-MS datasets correlate with the immune marker levels, we perform an additional linear regression analysis. 
+The *linear_regression_model* function regresses the levels of the selected immune marker against each of the metabolic signals individually. 
+```{r}
+linear_regression_model <- function(immune_matrix, metabo_matrix, yvar, metadata) {
+    
+    regression_dataset <- cbind(immune_matrix[, yvar], metabo_matrix)
+    
+    current_cytokine <- make.names(colnames(immune_matrix)[yvar])
+    colnames(regression_dataset)[1] <- current_cytokine
+    
+    results <- c()
+    
+    for (xvar in 1:dim(metabo_matrix)[2]) {
+        
+        #current_metabolite <- make.names(colnames(metabo_matrix)[xvar])
+        current_metabolite <- colnames(metabo_matrix)[xvar]
+        current_formula <- as.formula(paste0("log(", current_cytokine,  " + 1) ~ get(current_metabolite)"))
+        
+        reg_model <- lm(current_formula, data=regression_dataset)
+        model_summary <- summary(reg_model)
+        tval <- model_summary$coefficients[2, 3]
+        pval <- model_summary$coefficients[2, 4]
+        rsq <- model_summary$r.squared
+        anova_table <- anova(reg_model)
+        rsq_pval <- anova_table$`Pr(>F)`[1]
+        
+        results <- rbind(results,  c(Immune=colnames(immune_matrix)[yvar], 
+                                     Metabolite=colnames(metabo_matrix)[xvar], tvalue=tval,
+                                     beta_pvalue=pval, R2=rsq, R2_pval=rsq_pval))
+    }
+    results <- data.frame(results)
+    beta_qval <- p.adjust(as.numeric(as.character(results$beta_pvalue)), "BH")
+    R2_qval <- p.adjust(as.numeric(as.character(results$R2_pval)), "BH")
+    results <- cbind(results, beta_qval=beta_qval, R2_qval=R2_qval)
+    return(results)
+
+}
+```
+
+Perform the linear regression 
+```{r}
+for (immune_marker in 1:22) {
+
+  results <- linear_regression_model(immune_matrix, metabo_matrix, immune_marker, desi_neg_vmet2)
+  sheet_name <- colnames(immune_matrix)[immune_marker]
+  sheet_name <- gsub(" (pg/ml)", "", sheet_name, fixed=TRUE)
+  sheet_name <- gsub(" (ng/ml)", "", sheet_name, fixed=TRUE)
+  sheet_name <- gsub("/", "_", sheet_name, fixed=TRUE)
+  write.xlsx2(results, './CVF_ImmuneMarkers_Analysis/VMET2_DESI_NEG_Immune_LinearModels.xlsx', sheetName=sheet_name, col.names=TRUE, row.names=FALSE, append=TRUE)
+  
+}
+```
+
+```{r}
+for (immune_marker in 1:22) {
+
+  results <- linear_regression_model(immune_matrix_pos, metabo_matrix_pos, immune_marker, desi_pos_vmet2)
+  sheet_name <- colnames(immune_matrix_pos)[immune_marker]
+  sheet_name <- gsub(" (pg/ml)", "", sheet_name, fixed=TRUE)
+  sheet_name <- gsub(" (ng/ml)", "", sheet_name, fixed=TRUE)
+  sheet_name <- gsub("/", "_", sheet_name, fixed=TRUE)
+  write.xlsx2(results, './CVF_ImmuneMarkers_Analysis/VMET2_DESI_POS_Immune_LinearModels.xlsx', sheetName=sheet_name, col.names=TRUE, row.names=FALSE, append=TRUE)
+  
+}
+```
+
+# Analysis of the Immune Marker predictor models
+Refit the models for the main immune markers - DESI - MS Negative mode
+```{r}
+current_RFModel_IL1beta <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 7)
+current_RFModel_MBL <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 14)
+current_RFModel_IL8 <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 11)
+current_RFModel_C5 <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 12)
+current_RFModel_C5a <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 13)
+current_RFModel_C3 <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 15)
+current_RFModel_IgE <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 17)
+current_RFModel_IgG2 <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 19)
+current_RFModel_IgG3 <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 20)
+current_RFModel_IgG4 <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 21)
+current_RFModel_IgM <- RF_PredictImmuneMarker(immune_matrix, metabo_matrix, 22)
+```
+Fit RF models to all immune markers - DESI - MS Positive mode
+```{r}
+current_RFModel_IL1beta_pos <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 7)
+current_RFModel_IL5_pos <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 4)
+current_RFModel_IL8_pos <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 11)
+current_RFModel_C3_pos <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 15)
+current_RFModel_IgG2_pos <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 19)
+current_RFModel_IgG3_pos <- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 20)
+current_RFModel_IgM_pos<- RF_PredictImmuneMarker(immune_matrix_pos, metabo_matrix_pos, 22)
+```
+
+# Obtain the model prediction for each immune marker
+Retrieve the Out-of-bag predictions from the DESI- MS Negative mode models 
+```{r}
+IL1_OOB <- predict(current_RFModel_IL1beta$finalModel)
+MBL_OOB <- predict(current_RFModel_MBL$finalModel)
+IL8_OOB <- predict(current_RFModel_IL8$finalModel)
+C5_OOB <- predict(current_RFModel_C5$finalModel)
+C5a_OOB <- predict(current_RFModel_C5a$finalModel)
+C3_OOB <- predict(current_RFModel_C3$finalModel)
+IgE_OOB <- predict(current_RFModel_IgE$finalModel)
+IgG2_OOB <- predict(current_RFModel_IgG2$finalModel)
+IgG3_OOB <- predict(current_RFModel_IgG3$finalModel)
+IgG4_OOB <- predict(current_RFModel_IgG4$finalModel)
+IgM_OOB <- predict(current_RFModel_IgM$finalModel)
+
+# Assemble the predictions in a dataframe
+OOB_predictions_frame <- cbind(IL1_OOB, MBL_OOB, IL8_OOB, C5a_OOB, C3_OOB, IgE_OOB, IgG2_OOB, IgG3_OOB, IgG4_OOB, IgM_OOB, desi_neg_vmet2)
+# Remove duplicated column name
+# colnames(OOB_predictions_frame)[18] <- 'DESI_ID.z'
+
+OOB_predictions_frame[OOB_predictions_frame$Outcome == 'Iatrogenic Preterm', 'Outcome'] <- 'Preterm'
+```
+
+Retrieve the Out-of-bag predictions from the DESI- MS Positive mode models
+```{r}
+IL1_OOB_pos <- predict(current_RFModel_IL1beta_pos$finalModel)
+IL5_OOB_pos <- predict(current_RFModel_IL5_pos$finalModel)
+IL8_OOB_pos <- predict(current_RFModel_IL8_pos$finalModel)
+C3_OOB_pos <- predict(current_RFModel_C3_pos$finalModel)
+IgG2_OOB_pos <- predict(current_RFModel_IgG2_pos$finalModel)
+IgG3_OOB_pos <- predict(current_RFModel_IgG3_pos$finalModel)
+IgM_OOB_pos <- predict(current_RFModel_IgM_pos$finalModel)
+
+# Assemble the predictions in a dataframe
+OOB_predictions_frame_pos <- cbind(IL1_OOB_pos, IL5_OOB_pos, IL8_OOB_pos, C3_OOB_pos,IgG2_OOB_pos, IgG3_OOB_pos, IgM_OOB_pos, desi_pos_vmet2)
+# Remove duplicated column name
+# colnames(OOB_predictions_frame)[18] <- 'DESI_ID.z'
+
+OOB_predictions_frame_pos[OOB_predictions_frame_pos$Outcome == 'Iatrogenic Preterm', 'Outcome'] <- 'Preterm'
+```
+
+Retrieve the DESI predictions for CST for the next set of analyses. We use only the negative ion mode predictions.
+```{r}
+desi_predictions <- read_csv('../CST Typing by DESI-MS/Lactobacillus_Depleted_Detection_DESI-MS/VMET2_FinalModelLDepleted_Predictions_CST.csv')
+OOB_predictions_frame <- merge(OOB_predictions_frame, desi_predictions, by='DESI_ID')
+
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'CST_11.x'] <- 'CST_11'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'CST.x'] <- 'CST'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'SubjectID.x'] <- 'SubjectID'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'LactobacillusPercentage.x'] <- 'LactobacillusPercentage'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'LDominant_CST.x'] <- 'LDominant_CST'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'LDominant_RelAbundance.x'] <- 'LDominant_RelAbundance'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'Timepoint.x'] <- 'Timepoint'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'GestationalAge.x'] <- 'GestationalAge'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'Ethnicity.x'] <- 'Ethnicity'
+colnames(OOB_predictions_frame)[colnames(OOB_predictions_frame) == 'Outcome.x'] <- 'Outcome'
+```
+
+# Observed vs predicted scatter plots for the top immune Markers
+The next cell generates plots to visualize the goodness-of-fit of the RF predicted log(immune markers) to their original log transformed values. This code should be run to replicate Figure 4 (C).
+```{r}
+library(ggpubr)
+library(rstatix)
+library(dplyr)
+library(ggsignif)
+library(gridExtra)
+library(cowplot)
+
+# IL1-beta
+il1_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IL1_OOB,  x=log(`CVF IL-1beta (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IL-1beta + 1)") + ylab('Predicted log(IL-1beta + 1)') + geom_smooth(method='lm', alpha=0.2) + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+#+ annotate("label", x = 1, y =5,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IL1beta$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+il1_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IL1_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(il1_pred_obs)
+rightPlot <- ggplotGrob(il1_pred_boxplot)
+il1_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.3))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IL1_beta.png', il1_plot, dpi=300, width=12, height=8)
+rm("il1_pred_obs","il1_pred_boxplot", "il1_plot")
+
+# IL-8
+il8_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IL8_OOB,  x=log(`CVF IL-8 (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IL-8 + 1)") + ylab('Predicted log(IL-8 + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none")  + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+#+ annotate("label", x = 3, y =8,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IL8$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+il8_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IL8_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(il8_pred_obs)
+rightPlot <- ggplotGrob(il8_pred_boxplot)
+il8_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.3))
+
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IL8.png', il8_plot, dpi=300, width=12, height=8)
+rm("il8_pred_obs","il8_pred_boxplot", "il8_plot")
+
+# MBL
+mbl_pred_obs <- ggplot(OOB_predictions_frame, aes(y=MBL_OOB,  x=log(`CVF MBL (ng/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(MBL + 1)") + ylab('Predicted log(MBL + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+# + annotate("label", x = 1, y =1.5,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_MBL$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+mbl_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=MBL_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(mbl_pred_obs)
+rightPlot <- ggplotGrob(mbl_pred_boxplot)
+mbl_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.3))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/MBL.png', mbl_plot, dpi=300, width=12, height=8)
+rm("mbl_pred_obs","mbl_pred_boxplot", "mbl_plot")
+
+# C5a
+c5a_pred_obs <- ggplot(OOB_predictions_frame, aes(y=C5a_OOB,  x=log(`CVF C5a (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(C5a + 1)") + ylab('Predicted log(C5a + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+#+ annotate("label", x = 1, y =2.5,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_C5a$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+c5a_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=C5a_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(c5a_pred_obs)
+rightPlot <- ggplotGrob(c5a_pred_boxplot)
+c5a_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/C5a.png', c5a_plot, dpi=300, width=12, height=8)
+rm("c5a_pred_obs","c5a_pred_boxplot", "c5a_plot")
+
+# C3 
+c3_pred_obs <- ggplot(OOB_predictions_frame, aes(y=C3_OOB,  x=log(`CVF C3b/iC3b (ng/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(C3b/iC3b + 1)") + ylab('Predicted log(C3b/iC3b + 1)') + geom_smooth(method='lm', alpha=0.2) + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+# + annotate("label", x = 13, y =2.7,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_C3$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+c3_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=C3_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(c3_pred_obs)
+rightPlot <- ggplotGrob(c3_pred_boxplot)
+c3_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/C3.png', c3_plot,  dpi=300, width=12, height=8)
+rm("c3_pred_obs","c3_pred_boxplot", "c3_plot")
+
+# IgE
+ige_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IgE_OOB,  x=log(`CVF IgE (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IgE + 1)") + ylab('Predicted log(IgE + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+#+ annotate("label", x = 6, y =4,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IgE$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+ige_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IgE_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(ige_pred_obs)
+rightPlot <- ggplotGrob(ige_pred_boxplot)
+ige_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IgE.png', ige_plot, dpi=300, width=12, height=8)
+rm("ige_pred_obs","ige_pred_boxplot", "ige_plot")
+
+# IgG2
+ig2_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IgG2_OOB,  x=log(`CVF IgG2 (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IgG2 + 1)") + ylab('Predicted log(IgG2 + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+# + annotate("label", x = 10, y =13.5,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IgG2$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+ig2_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IgG2_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(ig2_pred_obs)
+rightPlot <- ggplotGrob(ig2_pred_boxplot)
+ig2_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IgG2.png', ig2_plot,dpi=300, width=12, height=8)
+rm("ig2_pred_obs","ig2_pred_boxplot", "ig2_plot")
+
+# IgG3
+ig3_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IgG3_OOB,  x=log(`CVF IgG3 (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IgG3 + 1)") + ylab('Predicted log(IgG3 + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+#+ annotate("label", x = 13, y =10.25,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IgG3$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+ig3_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IgG3_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(ig3_pred_obs)
+rightPlot <- ggplotGrob(ig3_pred_boxplot)
+ig3_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IgG3.png', ig3_plot, dpi=300, width=12, height=8)
+rm("ig3_pred_obs","ig3_pred_boxplot", "ig3_plot")
+
+# IgG4
+ig4_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IgG4_OOB,  x=log(`CVF IgG4 (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IgG4 + 1)") + ylab('Predicted log(IgG4 + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+# + annotate("label", x = 6.0, y =11.25,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IgG4$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+ 
+ig4_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IgG4_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(ig4_pred_obs)
+rightPlot <- ggplotGrob(ig4_pred_boxplot)
+ig4_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IgG4.png', ig4_plot,  dpi=300, width=12, height=8)
+rm("ig4_pred_obs","ig4_pred_boxplot", "ig4_plot")
+
+# IgM
+igm_pred_obs <- ggplot(OOB_predictions_frame, aes(y=IgM_OOB,  x=log(`CVF IgM (pg/ml)` + 1))) + geom_point(aes(col=LDominant_CST)) + xlab("Log(IgM + 1)") + ylab('Predicted log(IgM + 1)') + geom_smooth(method='lm', alpha=0.2)  + theme(legend.position="none") + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+# + annotate("label", x = 9, y =12.5,  label = paste("CV~", "italic(R)^2 ==~", round(current_RFModel_IgM$results$Rsquared, 2)),  parse = T) + geom_smooth(method='lm', alpha=0.2)
+
+igm_pred_boxplot <- ggplot(OOB_predictions_frame, aes(y=IgM_OOB,  x=LDominant_CST, fill=LDominant_CST)) + geom_boxplot(alpha=0.4, outlier.shape=NA) + geom_jitter(aes(col=LDominant_CST)) + theme(legend.position="none", axis.title.x=element_blank(), axis.title.y=element_blank()) + geom_signif(comparisons=list(c('LDepleted', 'LDominant')), test='t.test') + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))
+
+leftPlot <- ggplotGrob(igm_pred_obs)
+rightPlot <- ggplotGrob(igm_pred_boxplot)
+igm_plot <- plot_grid(leftPlot, rightPlot, align = "h", nrow = 1, rel_widths = c(0.8, 0.2))
+
+ggsave('./CVF_ImmuneMarkers_Analysis/RF_Predictions_Figures/IgM.png', igm_plot,  dpi=300, width=12, height=8)
+rm("igm_pred_obs","igm_pred_boxplot", "igm_plot")
+```
+
+# Correlation analysis between the original immune markers and the predicted immune marker levels
+```{r}
+library(ggcorrplot)
+# Analysis restricted to the 10 markers which showed a cross-validated R-squared > 0.1
+original_matrix <- OOB_predictions_frame[, c('CVF IL-1beta (pg/ml)', 'CVF MBL (ng/ml)', 'CVF IL-8 (pg/ml)', 
+                                     'CVF C5a (pg/ml)', 'CVF C3b/iC3b (ng/ml)', 'CVF IgE (pg/ml)', 
+                                     'CVF IgG2 (pg/ml)', 'CVF IgG3 (pg/ml)', 'CVF IgG4 (pg/ml)', 
+                                     'CVF IgM (pg/ml)')]
+# Replace an NA in C3b/iC3b with 0
+original_matrix[is.na(original_matrix)] <- 0
+# Spearman correlation metrix of log(immune_markers)
+# ggcorrplot(cor(log(original_matrix + 1), method='spearman'))
+
+# ggcorrplot(cor(OOB_predictions_frame[, 2:11], method='spearman'))
+# Joint spearman correlation matrix
+corr_matrix_plot <- ggcorrplot(cor(cbind(log(original_matrix + 1), OOB_predictions_frame[, 2:11]), method='spearman'))
+ggsave('./CVF_ImmuneMarkers_Analysis/DESI_NEG_ImmuneCorrelationMatrix.png', corr_matrix_plot)
+```
+
+
+```{r}
+# Analysis restricted to the 10 markers which showed a cross-validated R-squared > 0.1
+original_matrix <- OOB_predictions_frame_pos[, c('CVF IL-1beta (pg/ml)', 'CVF MBL (ng/ml)', 'CVF IL-8 (pg/ml)', 
+                                     'CVF C5 (ng/ml)', 'CVF C3b/iC3b (ng/ml)', 'CVF IgE (pg/ml)', 
+                                     'CVF IgG2 (pg/ml)', 'CVF IgG3 (pg/ml)', 'CVF IgG4 (pg/ml)', 
+                                     'CVF IgM (pg/ml)')]
+# Replace an NA in C3b/iC3b with 0
+original_matrix[is.na(original_matrix)] <- 0
+# Spearman correlation metrix of log(immune_markers)
+#ggcorrplot(cor(log(original_matrix + 1), method='spearman'))
+
+#ggcorrplot(cor(OOB_predictions_frame_pos[, 1:7], method='spearman'))
+# Joint spearman correlation matrix
+corr_matrix_plot <- ggcorrplot(cor(cbind(log(original_matrix + 1), OOB_predictions_frame_pos[, 1:7]), method='spearman'))
+ggsave('./CVF_ImmuneMarkers_Analysis/DESI_POS_ImmuneCorrelationMatrix.png', corr_matrix_plot)
+```
+
+
+
+# Distribution of measured and predicted immune markers at early and late gestation. (Figures 3-B and 3-C)
+```{r}
+# ------------------
+# MBL 
+mbl_boxplot <- ggplot(OOB_predictions_frame, aes(x=Outcome, y=log(`CVF MBL (ng/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~ModelOOBPrediction) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(MBL + 1)')
+
+OOB_LateGestation <- subset(OOB_predictions_frame, GestationalAge > 20)
+OOB_LastSample <- OOB_LateGestation%>% 
+    group_by(SubjectID) %>% 
+    slice(which.max(GestationalAge))
+
+mbl_boxplot_ls <- ggplot(OOB_LateGestation , aes(x=Outcome, y=log(`CVF MBL (ng/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~ModelOOBPrediction) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(MBL + 1)')
+
+# Timepoint 1 only
+mbl_boxplot_tp1 <- ggplot(subset(OOB_predictions_frame, Timepoint == 1), aes(x=Outcome, y=log(`CVF MBL (ng/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(MBL + 1)')
+
+mbl_boxplot_tp3 <- ggplot(subset(OOB_predictions_frame, Timepoint == 3), aes(x=Outcome, y=log(`CVF MBL (ng/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(MBL + 1)')
+
+mbl_oob_boxplot <- ggplot(OOB_predictions_frame, aes(x=Outcome, y=MBL_OOB)) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Predicted Log(MBL + 1)')
+
+mbl_oob_boxplot_tp1 <- ggplot(subset(OOB_predictions_frame, Timepoint == 1), aes(x=Outcome, y=MBL_OOB)) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Predicted Log(MBL + 1)')
+
+mbl_oob_boxplot_tp3 <- ggplot(subset(OOB_predictions_frame, Timepoint == 3), aes(x=Outcome, y=MBL_OOB)) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Predicted Log(MBL + 1)')
+
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_LDom_Outcome_Boxplot.png', mbl_boxplot, width=5)
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_Predicted_LDom_Outcome_Boxplot.png', mbl_oob_boxplot, width=5)
+
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_LDom_Outcome_Boxplot_TP1.png', mbl_boxplot_tp1, width=5)
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_Predicted_LDom_Outcome_Boxplot_TP1.png', mbl_oob_boxplot_tp1, width=5)
+
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_LDom_Outcome_Boxplot_TP3.png', mbl_boxplot_tp3, width=5)
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_Predicted_LDom_Outcome_Boxplot_TP3.png', mbl_oob_boxplot_tp3, width=5)
+
+capture.output(emtrends(lmer(log(`CVF MBL (ng/ml)` + 1) ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~Outcome|LDominant_CST, var='GestationalAge'), file='./CVF_ImmuneMarkers_Analysis/MBL_trends.txt')
+
+capture.output(emmeans(lmer(log(`CVF MBL (ng/ml)` + 1) ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~GestationalAge*Outcome|LDominant_CST, at=list(GestationalAge=c(22))), file='./CVF_ImmuneMarkers_Analysis/MBL_emmeans.txt')
+
+capture.output(emtrends(lmer(MBL_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~Outcome|LDominant_CST, var='GestationalAge'), 
+               file='./CVF_ImmuneMarkers_Analysis/MBL_predicted_trends.txt')
+capture.output(emmeans(lmer(MBL_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~GestationalAge*Outcome|LDominant_CST, at=list(GestationalAge=c(22))), file='./CVF_ImmuneMarkers_Analysis/MBL_predicted_emmeans.txt')
+
+# ------------------
+# IL1-beta 
+il1_boxplot <- ggplot(OOB_predictions_frame, aes(x=Outcome, y=log(`CVF IL-1beta (pg/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~ModelOOBPrediction) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(IL-1beta + 1)')
+
+il1_boxplot_tp1 <- ggplot(subset(OOB_predictions_frame, Timepoint == 1), aes(x=Outcome, y=log(`CVF IL-1beta (pg/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(IL-1beta + 1)')
+
+il1_boxplot_tp3 <- ggplot(subset(OOB_predictions_frame, Timepoint == 3), aes(x=Outcome, y=log(`CVF IL-1beta (pg/ml)` + 1))) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Log(IL-1beta + 1)')
+
+il1_oob_boxplot <- ggplot(OOB_predictions_frame, aes(x=Outcome, y=IL1_OOB)) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Predicted Log(IL-1beta + 1)')
+
+il1_oob_boxplot_tp1 <- ggplot(subset(OOB_predictions_frame, Timepoint == 1), aes(x=Outcome, y=IL1_OOB)) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Predicted Log(IL-1beta + 1)')
+
+il1_oob_boxplot_tp3 <- ggplot(subset(OOB_predictions_frame, Timepoint == 3), aes(x=Outcome, y=IL1_OOB)) + geom_boxplot(aes(col=Outcome, fill=Outcome), alpha=0.4, outlier.shape=NA) + facet_wrap(~LDominant_CST) + geom_jitter(aes(col=Outcome)) +  
+  scale_fill_manual(values=c('red', 'green4'), name='Outcome') + scale_color_manual(values=c('red', 'green4'), name='Outcome') + ylab('Predicted Log(IL-1beta + 1)')
+
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_LDom_Outcome_Boxplot.png', il1_boxplot, width=5)
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_Predicted_LDom_Outcome_Boxplot.png', il1_oob_boxplot, width=5)
+
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_LDom_Outcome_Boxplot_TP1.png', il1_boxplot_tp1, width=5)
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_Predicted_LDom_Outcome_Boxplot_TP1.png', il1_oob_boxplot_tp1, width=5)
+
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_LDom_Outcome_Boxplot_TP3.png', il1_boxplot_tp3, width=5)
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_Predicted_LDom_Outcome_Boxplot_TP3.png', il1_oob_boxplot_tp3, width=5)
+
+capture.output(emtrends(lmer(log(`CVF IL-1beta (pg/ml)` + 1) ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~Outcome|LDominant_CST, var='GestationalAge'), 
+               file='./CVF_ImmuneMarkers_Analysis/IL1beta_trends.txt')
+capture.output(emmeans(lmer(log(`CVF IL-1beta (pg/ml)` + 1) ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~GestationalAge*Outcome|LDominant_CST, at=list(GestationalAge=c(22))), file='./CVF_ImmuneMarkers_Analysis/IL1beta_emmeans.txt')
+
+capture.output(emtrends(lmer(IL1_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~Outcome|LDominant_CST, var='GestationalAge'), 
+               file='./CVF_ImmuneMarkers_Analysis/IL1_predicted_trends.txt')
+capture.output(emmeans(lmer(IL1_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~GestationalAge*Outcome|LDominant_CST, at=list(GestationalAge=c(22))), file='./CVF_ImmuneMarkers_Analysis/IL1_predicted_emmeans.txt')
+```
+# Immune response to cervical stitch intervention
+```{r}
+# Add a column to record if sample is pre or post stitch intervention
+pre_post <- rep(NA, dim(OOB_predictions_frame)[1])
+OOB_predictions_frame <- cbind(PrePostStitch=pre_post, OOB_predictions_frame)
+OOB_predictions_frame$PrePostStitch[OOB_predictions_frame$GestationalAge < OOB_predictions_frame$`Cerclage insertion`] <- 'Pre'
+OOB_predictions_frame$PrePostStitch[OOB_predictions_frame$GestationalAge >= OOB_predictions_frame$`Cerclage insertion`] <- 'Post'
+
+# Remove cases where a stitch was present before pregnancy
+Stitch_OnlyOOB_predictions <- OOB_predictions_frame[!OOB_predictions_frame$`Cerclage insertion` %in% c('Pre-conception', 'Pre-pregnancy'), ]
+
+# Get the pre samples and all post
+Stitch_Pre_Only <- subset(Stitch_OnlyOOB_predictions, PrePostStitch == 'Pre')
+Stitch_Post_Only <- subset(Stitch_OnlyOOB_predictions, PrePostStitch == 'Post')
+
+# Select only the 1st POST sample...
+Stitch_Post_Only_Min <- Stitch_Post_Only %>% 
+    group_by(SubjectID) %>% 
+    slice(which.min(GestationalAge))
+# ... or only the last PRE sample.
+Stitch_Pre_Only_Max <- Stitch_Pre_Only %>% 
+    group_by(SubjectID) %>% 
+    slice(which.max(GestationalAge))
+# Compile a dataframe containing only Pre Stitch samples and 1st sample Post only
+Pre_Post_Stitch_Frame <- rbind(Stitch_Pre_Only_Max, Stitch_Post_Only_Min)
+Pre_Post_Stitch_Frame  <- Pre_Post_Stitch_Frame  %>% group_by(SubjectID) %>% filter(n()>1)
+## 
+# Use dplyr to calculate the POST - PRE difference
+##
+change_Il1_OOB <- Pre_Post_Stitch_Frame %>% 
+    group_by(SubjectID) %>%  
+     mutate(Diff = IL1_OOB - lag(IL1_OOB))
+
+change_IL1beta <- Pre_Post_Stitch_Frame %>% 
+    group_by(SubjectID) %>%  
+     mutate(Diff = log(`CVF IL-1beta (pg/ml)` + 1) - lag(log(`CVF IL-1beta (pg/ml)`+1)))
+
+change_MBL_OOB <- Pre_Post_Stitch_Frame %>% 
+    group_by(SubjectID) %>%  
+     mutate(Diff = MBL_OOB - lag(MBL_OOB))
+
+change_MBL <- Pre_Post_Stitch_Frame %>% 
+    group_by(SubjectID) %>%  
+     mutate(Diff = log(`CVF MBL (ng/ml)` + 1) - lag(log(`CVF MBL (ng/ml)`+1)))
+
+change_IL8_OOB <- Pre_Post_Stitch_Frame %>% 
+    group_by(SubjectID) %>%  
+     mutate(Diff = IL8_OOB - lag(IL8_OOB))
+
+change_IL8 <- Pre_Post_Stitch_Frame %>% 
+    group_by(SubjectID) %>%  
+     mutate(Diff = log(`CVF IL-8 (pg/ml)` + 1) - lag(log(`CVF IL-8 (pg/ml)`+1)))
+# Correlation between differences
+cor(change_IL1beta$Diff, change_Il1_OOB$Diff, use='complete.obs')
+cor(change_MBL$Diff, change_MBL_OOB$Diff, use='complete.obs')
+# Assemble a dataframe with the differences from IL1-beta, MBL and 
+diff_Frame <- change_MBL[!is.na(change_MBL$Diff), c("SubjectID", "Outcome", "Cerclage material", "Diff")]
+colnames(diff_Frame)[4] <- "MBL"
+diff_Frame <- cbind(diff_Frame, change_MBL_OOB[!is.na(change_MBL_OOB$Diff), "Diff"])
+colnames(diff_Frame)[5] <- "PredictedMBL"
+diff_Frame <- cbind(diff_Frame, change_IL1beta[!is.na(change_IL1beta$Diff), "Diff"])
+colnames(diff_Frame)[6] <- "IL1beta"
+diff_Frame <- cbind(diff_Frame, change_Il1_OOB[!is.na(change_Il1_OOB$Diff), "Diff"])
+colnames(diff_Frame)[7] <- "PredictedIL1beta"
+diff_Frame <- cbind(diff_Frame, change_IL8[!is.na(change_IL8$Diff), "Diff"])
+colnames(diff_Frame)[8] <- "IL8"
+diff_Frame <- cbind(diff_Frame, change_IL8_OOB[!is.na(change_IL8_OOB$Diff), "Diff"])
+colnames(diff_Frame)[9] <- "PredictedIL8"
+
+diff_Frame <- subset(diff_Frame, `Cerclage material` %in% c("Nylon", "Mersilene"))
+```
+# Testing differences in response to cerclage
+```{r}
+mersilene_diff <- subset(diff_Frame, `Cerclage material` == "Mersilene")
+nylon_diff <- subset(diff_Frame,  `Cerclage material` == "Nylon")
+
+chisq_MBL <- rbind(c(sum(sign(mersilene_diff$MBL) > 0), sum(sign(mersilene_diff$MBL) <= 0)),
+           c(sum(sign(nylon_diff$MBL) > 0), sum(sign(nylon_diff$MBL) <= 0)))
+chisq.test(chisq_MBL)
+
+chisq_MBLPred <- rbind(c(sum(sign(mersilene_diff$PredictedMBL) > 0), sum(sign(mersilene_diff$PredictedMBL) <= 0)),
+           c(sum(sign(nylon_diff$PredictedMBL) > 0), sum(sign(nylon_diff$PredictedMBL) <= 0)))
+chisq.test(chisq_MBLPred)
+
+```
+
+```{r}
+# Baseline Boxplots MBL
+MBL_StitchResponse <- ggplot(diff_Frame , aes(y=MBL, x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Measured MBL")
+
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_StitchResponse.png', MBL_StitchResponse)
+
+# Baseline Boxplots MBL
+PredictedMBL_StitchResponse <- ggplot(diff_Frame , aes(y=PredictedMBL, x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Predicted MBL")
+
+ggsave('./CVF_ImmuneMarkers_Analysis/PredictedMBL_StitchResponse.png', PredictedMBL_StitchResponse)
+
+IL1_StitchResponse <- ggplot(diff_Frame , aes(y=IL1beta, x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Measured IL-1beta")
+
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1_StitchResponse.png', IL1_StitchResponse)
+
+# Baseline Boxplots MBL
+PredictedIL1_StitchResponse <- ggplot(diff_Frame , aes(y=PredictedIL1beta, x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Predicted IL-1beta")
+
+ggsave('./CVF_ImmuneMarkers_Analysis/PredictedIL1_StitchResponse.png', PredictedIL1_StitchResponse)
+```
+
+# Figure 3) F
+```{r}
+# Baseline Boxplots MBL
+PreStitch_MBL <- ggplot(subset(Stitch_Pre_Only_Max, `Cerclage material` %in% c('Mersilene', 'Nylon')) , aes(y=log(`CVF MBL (ng/ml)` + 1), x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Measured MBL")
+
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_PreStitch.png', PreStitch_MBL)
+
+PreStitch_PredictedMBL <- ggplot(subset(Stitch_Pre_Only_Max, `Cerclage material` %in% c('Mersilene', 'Nylon')) , aes(y=MBL_OOB, x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Predicted MBL")
+
+ggsave('./CVF_ImmuneMarkers_Analysis/PredictedMBL_PreStitch.png', PreStitch_PredictedMBL)
+
+# Baseline Boxplots IL1-beta
+PreStitch_IL1 <- ggplot(subset(Stitch_Pre_Only_Max, `Cerclage material` %in% c('Mersilene', 'Nylon')) , aes(y=log(`CVF IL-1beta (pg/ml)` + 1), x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Measured IL-1beta") 
+
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1_PreStitch.png', PreStitch_IL1)
+
+PreStitch_PredictedIL1 <- ggplot(subset(Stitch_Pre_Only_Max, `Cerclage material` %in% c('Mersilene', 'Nylon')) , aes(y=IL1_OOB, x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Predicted IL-1beta") 
+
+ggsave('./CVF_ImmuneMarkers_Analysis/PredictedIL1_PreStitch.png', PreStitch_PredictedIL1)
+```
+
+# Figure 3) F Comparisons
+```{r}
+# Testing IL-1 beta in differences between term and preterm in different stitch types
+t.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene' ))
+wilcox.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene' ))
+t.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+wilcox.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+
+t.test(formula=IL1_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene'))
+wilcox.test(formula=IL1_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene'))
+t.test(formula=IL1_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+wilcox.test(formula=IL1_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+```
+
+```{r}
+# Testing IL-1 beta in differences between term and preterm in different stitch types
+t.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene' ))
+wilcox.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene' ))
+t.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+wilcox.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+
+t.test(formula=MBL_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene'))
+wilcox.test(formula=MBL_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Mersilene'))
+t.test(formula=MBL_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+wilcox.test(formula=MBL_OOB~ Outcome, data=subset(Stitch_Pre_Only_Max, `Cerclage material` == 'Nylon'))
+```
+
+
+# Pre vs post stitch intervention levels of measured and predicted immune markers (Figures 3-D and 3-E)
+```{r}
+pre_post_il1 <- ggplot(subset(Pre_Post_Stitch_Frame, `Cerclage material` %in% c("Nylon", "Mersilene")), aes(x=factor(PrePostStitch, level=c('Pre', 'Post')), y=log(`CVF IL-1beta (pg/ml)`  + 1)))  + facet_wrap(~`Cerclage material`)  + geom_point(aes(col=Outcome), size=2) + scale_color_manual(values=c("red","green"))+ geom_line(aes(group=SubjectID)) + xlab('Timepoint (Pre vs Post Stitch Intervention)') + ylab('Log(IL-1beta + 1)')
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_PrePostStitch.png', pre_post_il1)
+
+
+pre_post_il1_oob <- ggplot(subset(Pre_Post_Stitch_Frame, `Cerclage material` %in% c("Nylon", "Mersilene")), aes(x=factor(PrePostStitch, level=c('Pre', 'Post')), y=IL1_OOB))  + facet_wrap(~`Cerclage material`)  + geom_point(aes(col=Outcome), size=2) + scale_color_manual(values=c("red","green"))+ geom_line(aes(group=SubjectID)) + xlab('Timepoint (Pre vs Post Stitch Intervention)') + ylab('Predicted Log(IL-1beta + 1)')
+ggsave('./CVF_ImmuneMarkers_Analysis/IL1beta_Predicted_PrePostStitch.png', pre_post_il1_oob)
+
+pre_post_il8 <- ggplot(subset(Pre_Post_Stitch_Frame, `Cerclage material` %in% c("Nylon", "Mersilene")), aes(x=factor(PrePostStitch, level=c('Pre', 'Post')), y=log(`CVF IL-8 (pg/ml)`  + 1)))  + facet_wrap(~`Cerclage material`)  + geom_point(aes(col=Outcome), size=2) + scale_color_manual(values=c("red","green"))+ geom_line(aes(group=SubjectID)) + xlab('Timepoint (Pre vs Post Stitch Intervention)') + ylab('Log(IL-8 + 1)')
+ggsave('./CVF_ImmuneMarkers_Analysis/IL8_PrePostStitch.png', pre_post_il8)
+
+
+pre_post_il8_oob <- ggplot(subset(Pre_Post_Stitch_Frame, `Cerclage material` %in% c("Nylon", "Mersilene")), aes(x=factor(PrePostStitch, level=c('Pre', 'Post')), y=IL8_OOB))  + facet_wrap(~`Cerclage material`)  + geom_point(aes(col=Outcome), size=2) + scale_color_manual(values=c("red","green"))+ geom_line(aes(group=SubjectID)) + xlab('Timepoint (Pre vs Post Stitch Intervention)') + ylab('Predicted Log(IL-8 + 1)')
+ggsave('./CVF_ImmuneMarkers_Analysis/IL8_Predicted_PrePostStitch.png', pre_post_il8_oob)
+
+pre_post_mbl <- ggplot(subset(Pre_Post_Stitch_Frame, `Cerclage material` %in% c("Nylon", "Mersilene")), aes(x=factor(PrePostStitch, level=c('Pre', 'Post')), y=log(`CVF MBL (ng/ml)`  + 1)))  + facet_wrap(~`Cerclage material`)  + geom_point(aes(col=Outcome), size=2) + scale_color_manual(values=c("red","green"))+ geom_line(aes(group=SubjectID)) + xlab('Timepoint (Pre vs Post Stitch Intervention)') + ylab('Log(MBL + 1)')
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_PrePostStitch.png', pre_post_mbl)
+
+
+pre_post_mbl_oob <- ggplot(subset(Pre_Post_Stitch_Frame, `Cerclage material` %in% c("Nylon", "Mersilene")), aes(x=factor(PrePostStitch, level=c('Pre', 'Post')), y=MBL_OOB))  + facet_wrap(~`Cerclage material`)  + geom_point(aes(col=Outcome), size=2) + scale_color_manual(values=c("red","green")) + geom_line(aes(group=SubjectID)) + xlab('Timepoint (Pre vs Post Stitch Intervention)') + ylab('Predicted Log(MBL + 1)')
+ggsave('./CVF_ImmuneMarkers_Analysis/MBL_Predicted_PrePostStitch.png', pre_post_mbl_oob)
+```
+
+# Statistical tests of MBL and IL1-beta levels before stitch intervention on paired samples
+```{r}
+# Testing IL-1 beta in differences between term and preterm in different stitch types
+t.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+t.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon'  & PrePostStitch ==  'Pre'))
+wilcox.test(formula=log(`CVF MBL (ng/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon'  & PrePostStitch ==  'Pre'))
+
+t.test(formula=MBL_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=MBL_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+t.test(formula=MBL_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=MBL_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon'& PrePostStitch ==  'Pre'))
+
+# Testing IL-1 beta in differences between term and preterm in different stitch types
+t.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+t.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=log(`CVF IL-1beta (pg/ml)` + 1)~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon' & PrePostStitch ==  'Pre'))
+
+t.test(formula=IL1_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=IL1_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Mersilene' & PrePostStitch ==  'Pre'))
+t.test(formula=IL1_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon' & PrePostStitch ==  'Pre'))
+wilcox.test(formula=IL1_OOB~ Outcome, data=subset(Pre_Post_Stitch_Frame, `Cerclage material` == 'Nylon' & PrePostStitch ==  'Pre'))
+```

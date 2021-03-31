@@ -1,0 +1,25 @@
+$emtrends
+LDominant_CST = LDepleted:
+ Outcome GestationalAge.trend      SE  df lower.CL upper.CL
+ Preterm            -0.000358 0.00688 233 -0.01390  0.01319
+ Term                0.004069 0.00405 235 -0.00391  0.01205
+
+LDominant_CST = LDominant:
+ Outcome GestationalAge.trend      SE  df lower.CL upper.CL
+ Preterm             0.002786 0.00383 249 -0.00476  0.01033
+ Term                0.002186 0.00217 239 -0.00209  0.00646
+
+Degrees-of-freedom method: kenward-roger 
+Confidence level used: 0.95 
+
+$contrasts
+LDominant_CST = LDepleted:
+ contrast       estimate      SE  df t.ratio p.value
+ Preterm - Term -0.00443 0.00798 234 -0.555  0.5796 
+
+LDominant_CST = LDominant:
+ contrast       estimate      SE  df t.ratio p.value
+ Preterm - Term  0.00060 0.00440 246  0.136  0.8917 
+
+Degrees-of-freedom method: kenward-roger 
+

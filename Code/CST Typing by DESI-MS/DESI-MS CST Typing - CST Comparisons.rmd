@@ -121,7 +121,7 @@ cat(paste("VMET DESI-MS Positive Mode Matrix: ", dim(desi_pos_vmet)[1], "samples
 desipos_first_metabolite_idx_vmet <- 28
 ```
 # Discrimination of CST types from each other based on their DESI-MS metabolic profiles
-In this analysis we examine if the DESI-MS profiles are significantly differenty and can be to discriminate between individual Community State Types (CST). A series of functions defined in the next cell will handle the model fitting and cross-validation for each specific comparison (IvsIII, IvsIV, IIIvsV, IIIvsIV, IvsV). 
+In this analysis we examine if the DESI-MS profiles are significantly different and can be to discriminate between individual Community State Types (CST). A series of functions defined in the next cell will handle the model fitting and cross-validation for each specific comparison (IvsIII, IvsIV, IIIvsV, IIIvsIV, IvsV). 
 The interface from the *caret* package is used to fit the random forest models and perform repeated (n=15 times) 7-fold stratified cross validation.
 
 ```{r}
@@ -405,8 +405,8 @@ ggsave(filename='./CST_Comparisons_DESI-MS/DESI-MS_IIIvsIV_CST_ROC.png', roc_Lde
 ```
 
 
-## Discrimination between CST III vs IV
-Lactobacillus iners (CST III) versus Lactobacillus crispatus (CST I)
+## Discrimination between CST III vs V
+Lactobacillus iners (CST III) versus Lactobacillus jensenii (CST V)
 ```{r}
 # Fit models to VMET2 
 IIIvsV_desipos_vmet2 <- random_forest_comparison_IIIvsV(desi_pos_vmet2,  desipos_first_metabolite_idx_vmet2)
