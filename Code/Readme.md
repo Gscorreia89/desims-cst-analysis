@@ -2,6 +2,7 @@
 
 **16S Analysis**: Contains all scripts to perform hierarchical clustering analysis and Community State Type (CST) assignment of the 16S rRNA sequencing data.
 
-**sdsd**: DESI-MS data analysis and prediction of relate the metabolomics
+**CST Typing by DESI-MS**: DESI-MS and LC-MS analysis focusing on prediction of the vaginal microbiome composition from the metabolic profiles, and 
+microbiome <-> metabolome associations. 
 
-**Immune Marker Analysis**: Predictive models and regression analysis of immune <-> metabolome interactions.
+**Immune Metabolic Association**: Predictive models and regression analysis of immune <-> metabolome interactions.
