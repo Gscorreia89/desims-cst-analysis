@@ -23,8 +23,6 @@ set.seed(57596)
 ggplot() + theme(plot.title = element_text(hjust = 'center'))
 registerDoParallel(cores=22)
 dir.create('./CST_Comparisons_LC-MS/', recursive=TRUE)
-dir.create('./CST_Comparisons_LC-MS/Precision_Recall_Curves/', recursive=TRUE)
-
 ```
 
 # Data import
