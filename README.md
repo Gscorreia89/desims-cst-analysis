@@ -8,6 +8,10 @@ The Data folder contains all the datasets required to replicate the analysis. Th
 16s sequencing data matrices, clinical and demographical variables, and immune marker abundances. 
 
 Recommended software versions:
-* Python version 3.8 or above 
+* Python version 3.8 or above (Anaconda Python is recommended) 
 * R version 4.0.2 or above
 * Specific packages used in each script are mentioned in the first cells of Jupyter or R notebooks.
+
+Apart from installing R, Python, and the required packages, no specific steps are required to install and run the 
+scripts. Some analyses use cross-validation and resampling, and therefore are computationally more demanding and might take
+a few hours to complete. We recommend running on a multicore (16 or more CPU) workstation with 32Gb RAM.
