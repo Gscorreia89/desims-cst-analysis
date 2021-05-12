@@ -1,0 +1,65 @@
+---
+title: "16S data processing - centered-log-ratio transform of VMET and VMET2 count matrices"
+output: html_notebook
+---
+
+
+```{r "setup", include=FALSE}
+require("knitr")
+opts_knit$set(root.dir='./')
+```
+
+Import the required packages
+```{r, include=FALSE}
+library(readr)
+library(readxl)
+library(zCompositions)
+library(ALDEx2)
+library(propr)
+library(ggplot2)
+library(doParallel)
+set.seed(8431)
+registerDoParallel(cores=22)
+```
+
+Load the VMET 16S data matrix
+```{r, message=FALSE, warning=FALSE}
+study_metadata <- read_csv("../../Data/VMET_Metadata.csv")
+
+# Read the 16Sdataset 
+vmet_16s <- read_csv("../../Data/16S Data/VMET_16S_SpeciesMatrixFiltered.csv")
+
+# Summary of the VMET 16S data matrix
+cat(paste("\n", "VMET Cohort - 16S data matrix: ", dim(vmet_16s)[1], "samples, ", dim(vmet_16s)[2] - 1, "OTUs", "\n"))
+```
+Apply the Centered-log ratio transformation to the 16s data matrix and export a CLR-transformed data matrix
+```{r}
+# CLR transform is performed using the propr package
+rho <- propr(vmet_16s[, 2:dim(vmet_16s)[2]], metric = "rho", ivar="clr")
+
+export_clr_vmet_16s <- cbind(Seq_ID=vmet_16s$Seq_ID, rho@logratio)
+
+write.csv(export_clr_vmet_16s, file = '../../Data/VMET_16S_Species_CLR.csv', row.names = FALSE)
+```
+Load the VMET2 16S data matrix
+```{r, message=FALSE, warning=FALSE}
+study_metadata <- read_csv("../../Data/VMET2_Metadata.csv")
+
+# Read the 16Sdataset 
+vmet2_16s <- read_csv("../../Data/16S Data/VMET2_16S_SpeciesMatrixFiltered.csv")
+
+# Summary of the VMET2 16S data matrix
+cat(paste("\n", "VMET2 Cohort - 16S data matrix: ", dim(vmet2_16s)[1], "samples, ", dim(vmet2_16s)[2] - 1, "OTUs", "\n"))
+```
+Apply the Centered-log ratio transformation to the 16s data matrix and export a CLR-transformed data matrix
+```{r}
+# CLR transform is performed using the propr package
+rho <- propr(vmet2_16s[, 2:dim(vmet2_16s)[2]], metric = "rho", ivar="clr")
+
+export_clr_vmet2_16s <- cbind(Seq_ID=vmet2_16s$Seq_ID, rho@logratio)
+
+write.csv(export_clr_vmet2_16s, file = '../../Data/VMET2_16S_Species_CLR.csv', row.names = FALSE)
+```
+
+
+

@@ -12,6 +12,8 @@ State Type, or CST:
 
 **VMET 16S Analysis - Community State Type analysis.ipynb**: Notebook containing the HCA of the VMET 16S dataset and definition of Community State Types
 
+**16S data CLR Transform.rmd**: R notebook with steps used to generate centred-log-ratio transform of the 16S data matrices.
+
 **CST_Clustering.py**: Python functions for performing Community state type clustering from a 16S data matrix. 
 Used in the CST analysis Jupyter notebooks.
 
