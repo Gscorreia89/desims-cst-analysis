@@ -1,0 +1,178 @@
+---
+title: "Preterm birth prediction from CLR-transformed 16S profiles" 
+output: html_notebook
+---
+
+```{r "setup", include=FALSE}
+require("knitr")
+opts_knit$set(root.dir='./')
+```
+
+Load the required packages
+```{r, include=FALSE}
+library(ggplot2)
+library(doParallel)
+library(readr)
+library(caret)
+library(plotROC)
+library(pROC)
+library(dplyr)
+set.seed(239538)
+# Set ggplot titles to appear at center
+ggplot() + theme(plot.title = element_text(hjust = 'center'))
+registerDoParallel(cores=22)
+dir.create('./PTB_Prediction/', recursive=TRUE)
+```
+
+# Data import
+Load the VMET 16S dataset
+```{r, warning=F, echo=F, message=F}
+# Load the 16S 
+vmet16S <- read_csv("../../Data/16S Data/VMET_16S_SpeciesMatrixFiltered.csv")
+vmetMetadata <- read_csv("../../Data/VMET_Metadata.csv")
+
+vmet16S <- merge(vmetMetadata , vmet16S, by='Seq_ID')
+```
+# Data import
+Load the VMET2 16S dataset
+```{r, warning=F, echo=F, message=F}
+# Load the 16S 
+vmet216S <- read_csv("../../Data/16S Data/VMET2_16S_SpeciesMatrixFiltered.csv")
+vmet2Metadata <- read_csv("../../Data/VMET2_Metadata.csv")
+
+vmet216S <- merge(vmet2Metadata , vmet216S, by='Seq_ID')
+```
+
+Overview of dataset dimensions
+```{r}
+# VMET 16S
+# Assign a variable with the index of the first column corresponding to a microbe count
+first_microbe_idx_vmet <- 21
+cat(paste("VMET 16S CLR Matrix: ", dim(vmet16S)[1], "samples, ", dim(vmet16S)[2] - first_microbe_idx_vmet, "microbe features", "\n"))
+# VMET2 16S
+# Assign a variable with the index of the first column corresponding to a microbe count
+first_microbe_idx_vmet2 <- 22
+cat(paste("VMET2 16S CLR Matrix: ", dim(vmet216S)[1], "samples, ", dim(vmet216S)[2] -first_microbe_idx_vmet2 , "microbe features", "\n"))
+```
+# Prediction of Preterm birth using the 16s microbiome profile.
+In this analysis we examine if the 16S profiles can be directly used to predict preterm birth. A helper function, *random_forest_comparison_Outcome*, is defined in the next cell to handle the model fitting and cross-validation. The interface from the *caret* package is used to fit the random forest models and perform a repeated (n=15 times) 7-fold stratified cross validation. This function will then be applied to predict preterm birth using the centered-log-ratio transformed 16S data matrices. 
+```{r}
+# Prediction of preterm 
+random_forest_comparison_Outcome <- function(dataset, first_microbe_idx, outcome_var='Outcome') {
+   dataset_train <- dataset[, colnames(dataset)[first_microbe_idx:dim(dataset)[2]]]
+   dataset_train <- cbind(Outcome=dataset[outcome_var], dataset_train)
+   
+   dataset_train$Outcome <- factor(dataset_train$Outcome)
+   
+   fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                              number = 7, summaryFunction=multiClassSummary, 
+                              preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+    # mtry set to fix rule of thumb value 1/3 of nfeatures
+   rf_fit <- train(Outcome ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+   
+  return (rf_fit)
+}
+
+# Helper function to calculate parameters for roc curves and generate quick plots for inspection
+get_roc <- function(model, levels, target) {
+  
+    #cv_original_class <- model$trainingData$.outcome
+    cv_original_class <- model$pred$obs
+    #cv_predictor_avg <- aggregate(as.formula(paste(target, "~ rowIndex")),model$pred,mean)[,target]
+    cv_predictor_avg <- model$pred[, target]
+    roc_test_set <- roc(cv_original_class, cv_predictor_avg, ci=TRUE)
+    roc_data <- data.frame(Class=cv_original_class,target=cv_predictor_avg)
+    roc_plot <- ggplot(roc_data, 
+    aes(m = target, d = factor(Class, levels = c(levels)), color='firebrick')) + guides(color = FALSE) + 
+    geom_roc(hjust = 0, vjust = 0) + coord_equal() + style_roc(theme=theme_grey, xlab='1 - Specificity', ylab='Sensitivity') +  annotate("label", x = .75, y = .25, 
+           label = paste("Mean AUC =", round(roc_test_set$auc, 2)), color='firebrick')
+    
+    return(list(data=roc_data, roc=roc_test_set, plot=roc_plot)) 
+}
+
+# Utility function to select only a single sample per patient from a given trimester.
+# This function will select a single sample per pateint, with a gestational age value closest sample to the target. Selected 
+# samples are further filtered to ensure they do not deviate by max_week_difference.
+getNearestSample <- function(dataset, gestational_age_target=12, gestational_age_var='GestationalAge', max_week_difference=6) {
+   subsetDataset <- dataset %>%
+   group_by(SubjectID) %>%
+   slice(which.min(abs(get(gestational_age_var) - gestational_age_target))) %>%
+    slice(which(abs(get(gestational_age_var) - gestational_age_target) <= max_week_difference))
+   
+return(subsetDataset)
+}
+```
+
+## PTB prediction using samples from 1st, 2nd and 3rd trimester only - VMET dataset
+```{r}
+## VMET 
+# 1st Trimester
+vmet16S_1Trim <- getNearestSample(vmet16S, 8, max_week_difference = 7)
+ptb_vmet_1Trim <- random_forest_comparison_Outcome(subset(vmet16S_1Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
+rm(vmet16S_1Trim)
+
+# 2nd Trimester
+vmet16S_2Trim <- getNearestSample(vmet16S, 20, max_week_difference = 7)
+ptb_vmet_2Trim <- random_forest_comparison_Outcome(subset(vmet16S_2Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
+rm(vmet16S_2Trim)
+
+# 3rd Trimester
+vmet16S_3Trim <- getNearestSample(vmet16S, 32, max_week_difference = 7)
+ptb_vmet_3Trim <- random_forest_comparison_Outcome(subset(vmet16S_3Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
+rm(vmet16S_3Trim)
+```
+Export result summary and ROC curves
+```{r}
+capture.output(print(ptb_vmet_1Trim), file='./PTB_Prediction/VMET_16S_1Trim_PTB.txt')
+ROCPlot <- get_roc(ptb_vmet_1Trim, c('Term', 'Preterm'), 'Preterm')
+ggsave(filename='./PTB_Prediction/VMET_16S_1Trim_PTB_ROC.png', ROCPlot$plot)
+rm(ROCPlot)
+
+capture.output(print(ptb_vmet_2Trim), file='./PTB_Prediction/VMET_16S_2Trim_PTB.txt')
+ROCPlot <- get_roc(ptb_vmet_2Trim, c('Term', 'Preterm'), 'Preterm')
+ggsave(filename='./PTB_Prediction/VMET_16S_2Trim_PTB_ROC.png', ROCPlot$plot)
+rm(ROCPlot)
+
+capture.output(print(ptb_vmet_3Trim), file='./PTB_Prediction/VMET_16S_3Trim_PTB.txt')
+ROCPlot <- get_roc(ptb_vmet_3Trim, c('Term', 'Preterm'), 'Preterm')
+ggsave(filename='./PTB_Prediction/VMET_16S_3Trim_PTB_ROC.png', ROCPlot$plot)
+rm(ROCPlot)
+```
+
+## PTB prediction using samples from 1st, 2nd and 3rd trimester only - VMET2 dataset
+```{r}
+## VMET2
+# 1st Trimester
+vmet216S_1Trim <- getNearestSample(vmet216S, 8,  max_week_difference = 7)
+ptb_vmet2_1Trim <- random_forest_comparison_Outcome(subset(vmet216S_1Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
+rm(vmet216S_1Trim)
+
+# 2nd Trimester
+vmet216S_2Trim <- getNearestSample(vmet216S, 20,  max_week_difference = 7)
+ptb_vmet2_2Trim <- random_forest_comparison_Outcome(subset(vmet216S_2Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
+rm(vmet216S_2Trim)
+
+# 3rd Trimester
+vmet216S_3Trim <- getNearestSample(vmet216S, 32,  max_week_difference = 7)
+ptb_vmet2_3Trim <- random_forest_comparison_Outcome(subset(vmet216S_3Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
+rm(vmet216S_3Trim)
+```
+
+Export result summary and ROC curves
+```{r}
+capture.output(print(ptb_vmet2_1Trim), file='./PTB_Prediction/VMET2_16S_1Trim_PTB.txt')
+ROCPlot <- get_roc(ptb_vmet2_1Trim, c('Term', 'Preterm'), 'Preterm')
+ggsave(filename='./PTB_Prediction/VMET2_16S_1Trim_PTB_ROC.png', ROCPlot$plot)
+rm(ROCPlot)
+
+capture.output(print(ptb_vmet2_2Trim), file='./PTB_Prediction/VMET2_16S_2Trim_PTB.txt')
+ROCPlot <- get_roc(ptb_vmet2_2Trim, c('Term', 'Preterm'), 'Preterm')
+ggsave(filename='./PTB_Prediction/VMET2_16S_2Trim_PTB_ROC.png', ROCPlot$plot)
+rm(ROCPlot)
+
+capture.output(print(ptb_vmet2_3Trim), file='./PTB_Prediction/VMET2_16S_3Trim_PTB.txt')
+ROCPlot <- get_roc(ptb_vmet2_3Trim, c('Term', 'Preterm'), 'Preterm')
+ggsave(filename='./PTB_Prediction/VMET2_16S_3Trim_PTB_ROC.png', ROCPlot$plot)
+rm(ROCPlot)
+```
