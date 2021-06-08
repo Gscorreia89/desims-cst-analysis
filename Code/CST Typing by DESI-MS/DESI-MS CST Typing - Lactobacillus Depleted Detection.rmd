@@ -455,3 +455,197 @@ vmet_desi_pos_OOB_LDep <- confusionMatrix(data = predict(LDepleted_desipos_vmet$
 capture.output(print(vmet_desi_pos_OOB_LDom), file='./Lactobacillus_Depleted_Detection_DESI-MS/OOB_and_CV_Metrics/VMET_DESI_POS_RF_Model_CV_LDom.txt')
 capture.output(print(vmet_desi_pos_OOB_LDep), file='./Lactobacillus_Depleted_Detection_DESI-MS/OOB_and_CV_Metrics/VMET_DESI_POS_RF_Model_CV_LDep.txt')
 ```
+
+## Supplementary analysis I - Comparison of results from models with gestational age as predictor
+Using gestational age as a covariate in the random effect models improves the predictive power of the LDepleted detection random forest models?
+```{r}
+random_forest_comparison_LDepleted_GestationalAge <- function(dataset, first_metabo_idx) {
+   
+   # Extract metabolic features only and column stack with the y vector
+   dataset_train <- dataset[, colnames(dataset)[first_metabo_idx:dim(dataset)[2]]]
+   dataset_train <- cbind(LDepleted=dataset$LDominant_CST, GestationalAge=dataset$GestationalAge, dataset_train)
+   
+   # Replace NA's with 0 - not necessary...
+   dataset_train <- dataset_train[complete.cases(dataset_train), ]
+   
+   dataset_train$LDepleted <- factor(dataset_train$LDepleted)
+   # 7-Fold cross-validation repeated 15 times.
+   fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
+                              number = 7, summaryFunction=multiClassSummary, 
+                              preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+   
+   # ntree set to a "Large" number = 1000
+   # mtry set here to a fixed rule of thumb value 1/3 of number of features (rule of thumb proposed in [1])
+   rf_fit <- train(LDepleted ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+   
+  return (rf_fit)
+}
+```
+# Suplementary analysis - Using gestational age as a covariate in the random forest models
+Using gestational age as a covariate in the random effect models improves the predictive power of the LDepleted detection random forest models?
+```{r}
+# Fit models to VMET2
+LDepleted_desipos_vmet2_GestAge <- random_forest_comparison_LDepleted_GestationalAge(desi_pos_vmet2,  desipos_first_metabolite_idx_vmet2)
+LDepleted_desineg_vmet2_GestAge <- random_forest_comparison_LDepleted_GestationalAge(desi_neg_vmet2, desineg_first_metabolite_idx_vmet2)
+# Fit models to VMET
+LDepleted_desipos_vmet_GestAge <- random_forest_comparison_LDepleted_GestationalAge(desi_pos_vmet,  desipos_first_metabolite_idx_vmet)
+LDepleted_desineg_vmet_GestAge <- random_forest_comparison_LDepleted_GestationalAge(desi_neg_vmet, desineg_first_metabolite_idx_vmet)
+
+# save the model performance metrics to .txt files
+capture.output(print(LDepleted_desipos_vmet2_GestAge), file='./Lactobacillus_Depleted_Detection_DESI-MS/VMET2_DESI_POS_RF_Model_CST_GestationalAge.txt')
+capture.output(print(LDepleted_desipos_vmet_GestAge), file='./Lactobacillus_Depleted_Detection_DESI-MS/VMET_DESI_POS_RF_Model_CST_GestationalAge.txt')
+capture.output(print(LDepleted_desineg_vmet2_GestAge), file='./Lactobacillus_Depleted_Detection_DESI-MS/VMET2_DESI_NEG_RF_Model_CST_GestationalAge.txt')
+capture.output(print(LDepleted_desineg_vmet_GestAge), file='./Lactobacillus_Depleted_Detection_DESI-MS/VMET_DESI_NEG_RF_Model_CST_GestationalAge.txt')
+
+# ROC_Information
+desipos_roc_vmet2 <- get_roc(LDepleted_desipos_vmet2_GestAge, c('LDominant', 'LDepleted'), 'LDepleted')
+desineg_roc_vmet2 <- get_roc(LDepleted_desineg_vmet2_GestAge, c('LDominant', 'LDepleted'), 'LDepleted')
+
+desipos_roc_vmet <- get_roc(LDepleted_desipos_vmet_GestAge, c('LDominant', 'LDepleted'), 'LDepleted')
+desineg_roc_vmet <- get_roc(LDepleted_desineg_vmet_GestAge, c('LDominant', 'LDepleted'), 'LDepleted')
+
+# Stack the roc curves on a dataframe for plotting
+pos_roc_data_vmet2 <- cbind(desipos_roc_vmet2$data, Mode=rep('Positive', dim(desipos_roc_vmet2$data)[1]), Study=rep('VMET2', dim(desipos_roc_vmet2$data)[1]))
+neg_roc_data_vmet2 <- cbind(desineg_roc_vmet2$data, Mode=rep('Negative', dim(desineg_roc_vmet2$data)[1]), Study=rep('VMET2', dim(desineg_roc_vmet2$data)[1]))
+
+pos_roc_data_vmet <- cbind(desipos_roc_vmet$data, Mode=rep('Positive', dim(desipos_roc_vmet$data)[1]), Study=rep('VMET', dim(desipos_roc_vmet$data)[1]))
+neg_roc_data_vmet <- cbind(desineg_roc_vmet$data, Mode=rep('Negative', dim(desineg_roc_vmet$data)[1]), Study=rep('VMET', dim(desineg_roc_vmet$data)[1]))
+
+desi_roc_data <- rbind(pos_roc_data_vmet2, neg_roc_data_vmet2, pos_roc_data_vmet, neg_roc_data_vmet)
+
+# Remove intermediate variables
+rm(pos_roc_data_vmet2)
+rm(neg_roc_data_vmet2)
+rm(pos_roc_data_vmet)
+rm(neg_roc_data_vmet)
+
+desi_roc_data$Class <- factor(desi_roc_data$Class, levels = c('LDominant', 'LDepleted'))
+desi_roc_data$Class <- as.numeric(desi_roc_data$Class) - 1
+# Generate the ROC curve
+roc_Ldepleted_desi <- ggplot(desi_roc_data, 
+    aes(m = target, d = Class, color=Study, linetype=Mode)) + 
+    geom_roc(hjust = 0, vjust = 0, labels=F) + coord_equal() + style_roc(theme=theme_grey, xlab='1 - Specificity', ylab='Sensitivity') + ggtitle('Detection of Lactobacillus Depleted State by DESI-MS') + scale_linetype_manual(values=c("dotted", "solid"))#+ annotate("label", x = c(.75), y = c(.25), parse=FALSE, label = roc_lab)
+
+# Save the ROC curve
+ggsave(filename='./Lactobacillus_Depleted_Detection_DESI-MS/DESI-MS_LactobacillusDepleted_CST_ROC_GestationalAge.png', roc_Ldepleted_desi)
+```
+Boxplots with pairwise comparisons of resampled measures from models without and with gestational age
+```{r}
+vmet_pos_resamp <- resamples(list(`w/ GA`=LDepleted_desipos_vmet, `withGA`=LDepleted_desipos_vmet_GestAge))
+plot_resamp_vmet_pos <- bwplot(vmet_pos_resamp)
+vmet2_pos_resamp <- resamples(list(`w/ GA`=LDepleted_desipos_vmet2, `withGA`=LDepleted_desipos_vmet2_GestAge))
+plot_resamp_vmet2_pos <- bwplot(vmet2_pos_resamp)
+
+vmet_neg_resamp <- resamples(list(`w/ GA`=LDepleted_desineg_vmet, `withGA`=LDepleted_desineg_vmet_GestAge))
+plot_resamp_vmet_neg <- bwplot(vmet_neg_resamp)
+vmet2_neg_resamp <- resamples(list(`w/ GA`=LDepleted_desineg_vmet2, `withGA`=LDepleted_desineg_vmet2_GestAge))
+plot_resamp_vmet2_neg <- bwplot(vmet2_neg_resamp)
+
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_GAModels_VMET_pos.png")
+print(plot_resamp_vmet_pos)
+dev.off()
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_GAModels_VMET2_pos.png")
+print(plot_resamp_vmet2_pos)
+dev.off()
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_GAModels_VMET_neg.png")
+print(plot_resamp_vmet_neg)
+dev.off()
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_GAModels_VMET2_neg.png")
+print(plot_resamp_vmet2_neg)
+dev.off()
+```
+
+## Supplementary analysis II - Comparison of results with leave subject-out CV
+To in
+```{r}
+random_forest_comparison_LDepleted_LeaveGroupOut <- function(dataset, first_metabo_idx) {
+   
+   # Extract metabolic features only and column stack with the y vector
+   dataset_train <- dataset[, colnames(dataset)[first_metabo_idx:dim(dataset)[2]]]
+   dataset_train <- cbind(LDepleted=dataset$LDominant_CST, GestationalAge=dataset$GestationalAge, SubjectID=dataset$SubjectID, dataset_train)
+   
+   # Replace NA's with 0 - not necessary...
+   dataset_train <- dataset_train[complete.cases(dataset_train), ]
+   
+   dataset_train$LDepleted <- factor(dataset_train$LDepleted)
+   # 7-Fold cross-validation repeated 15 times.
+   fit_control <- trainControl(index=groupKFold(dataset_train$SubjectID, 7), classProbs = TRUE,
+                              summaryFunction=multiClassSummary, 
+                              preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+   
+   # ntree set to a "Large" number = 1000
+   # mtry set here to a fixed rule of thumb value 1/3 of number of features (rule of thumb proposed in [1])
+   rf_fit <- train(LDepleted ~ . - SubjectID, 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+   
+  return (rf_fit)
+}
+
+# Stratified 7-fold CV without repeats to allow comparison with caret resamples functions
+random_forest_comparison_LDepleted_CVComp <- function(dataset, first_metabo_idx) {
+   
+   # Extract metabolic features only and column stack with the y vector
+   dataset_train <- dataset[, colnames(dataset)[first_metabo_idx:dim(dataset)[2]]]
+   dataset_train <- cbind(LDepleted=dataset$LDominant_CST, dataset_train)
+   
+   # Replace NA's with 0 - not necessary...
+   # dataset_train[is.na(dataset_train)] <- 0
+   
+   dataset_train$LDepleted <- factor(dataset_train$LDepleted)
+   # 7-Fold cross-validation repeated 15 times.
+   fit_control <- trainControl(method = "cv", classProbs = TRUE,
+                              number = 7, summaryFunction=multiClassSummary, 
+                              preProcOptions = c('center', 'scale'), savePredictions=TRUE)
+   
+   # ntree set to a "Large" number = 1000
+   # mtry set here to a fixed rule of thumb value 1/3 of number of features (rule of thumb proposed in [1])
+   rf_fit <- train(LDepleted ~ ., 
+                   data = dataset_train, method='rf', trControl=fit_control, ntree=1000, metric='AUC', tuneGrid=data.frame(mtry=dim(dataset_train)[2]/3))
+   
+  return (rf_fit)
+}
+
+```
+
+```{r}
+# Fit models to VMET2
+LDepleted_desipos_vmet2_LGOCV <- random_forest_comparison_LDepleted_LeaveGroupOut(desi_pos_vmet2,  desipos_first_metabolite_idx_vmet2)
+LDepleted_desipos_vmet2_7fold <- random_forest_comparison_LDepleted_CVComp(desi_pos_vmet2,  desipos_first_metabolite_idx_vmet2)
+
+LDepleted_desineg_vmet2_LGOCV <- random_forest_comparison_LDepleted_LeaveGroupOut(desi_neg_vmet2, desineg_first_metabolite_idx_vmet2)
+LDepleted_desineg_vmet2_7fold <-  random_forest_comparison_LDepleted_CVComp(desi_neg_vmet2, desineg_first_metabolite_idx_vmet2)
+
+# Fit models to VMET
+LDepleted_desipos_vmet_LGOCV <- random_forest_comparison_LDepleted_LeaveGroupOut(desi_pos_vmet,  desipos_first_metabolite_idx_vmet)
+LDepleted_desipos_vmet_7fold <- random_forest_comparison_LDepleted_CVComp(desi_pos_vmet,  desipos_first_metabolite_idx_vmet)
+
+# 
+LDepleted_desineg_vmet_LGOCV <- random_forest_comparison_LDepleted_LeaveGroupOut(desi_neg_vmet, desineg_first_metabolite_idx_vmet)
+LDepleted_desineg_vmet_7fold <- random_forest_comparison_LDepleted_CVComp(desi_neg_vmet, desineg_first_metabolite_idx_vmet)
+
+vmet_pos_resamp <- resamples(list(`Standard CV`=LDepleted_desipos_vmet_7fold, `LeaveSubjectOut`=LDepleted_desipos_vmet_LGOCV))
+plot_resamp_vmet_pos <- bwplot(vmet_pos_resamp)
+
+vmet_neg_resamp <- resamples(list(`Standard CV`=LDepleted_desineg_vmet_7fold, `LeaveSubjectOut`=LDepleted_desineg_vmet_LGOCV))
+plot_resamp_vmet_neg <- bwplot(vmet_neg_resamp)
+
+vmet2_pos_resamp <- resamples(list(`Standard CV`=LDepleted_desipos_vmet2_7fold, `LeaveSubjectOut`=LDepleted_desipos_vmet2_LGOCV))
+plot_resamp_vmet2_pos <- bwplot(vmet2_pos_resamp)
+
+vmet2_neg_resamp <- resamples(list(`Standard CV`=LDepleted_desineg_vmet2_7fold, `LeaveSubjectOut`=LDepleted_desineg_vmet2_LGOCV))
+plot_resamp_vmet2_neg <- bwplot(vmet2_neg_resamp)
+
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_LGCV_Models_VMET_pos.png")
+print(plot_resamp_vmet_pos)
+dev.off()
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_LGCV_Models_VMET2_pos.png")
+print(plot_resamp_vmet2_pos)
+dev.off()
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_LGCV_Models_VMET_neg.png")
+print(plot_resamp_vmet_neg)
+dev.off()
+trellis.device(device="png", filename="./Lactobacillus_Depleted_Detection_DESI-MS/RF_LGCV_Models_VMET2_neg.png")
+print(plot_resamp_vmet2_neg)
+dev.off()
+```

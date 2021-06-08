@@ -1,5 +1,5 @@
 ---
-title: "CST Typing by DESI-MS - metabolic signals associated with community state types = Linear mixed effect model analysis"
+title: "CST Typing by DESI-MS - metabolic signals associated with community state types - Linear mixed effect model analysis"
 output: html_notebook
 ---
 
@@ -160,7 +160,7 @@ fit_lmm_beta_and_pvalues_vmet2 <- function(dataset, var) {
       currmet <- colnames(dataset)[var]
                                    
       # LME model were GestationalAge is modelled as a time slope. Random intercept and slope per patient
-      rsmodel <- lmer(log(get(currmet) + 1) ~ CST + GestationalAge + BMI + Ethnicity + Age + (0 + GestationalAge|SubjectID) + (1|SubjectID), data=dataset,  REML=TRUE)
+      rsmodel <- lmer(log(get(currmet) + 1) ~ CST + GestationalAge + BMI + Ethnicity + Age + (GestationalAge||SubjectID), data=dataset,  REML=TRUE)
       
       cst_pairwise_contrasts <- data.frame(emmeans(rsmodel, pairwise~CST, at=list(GestationalAge=20, Age=30, BMI=25), adjust='None')$contrast)
     
@@ -241,7 +241,7 @@ fit_lmm_beta_and_pvalues_vmet <- function(dataset, var) {
     currmet <- colnames(dataset)[var]
     
     # LME model were GestationalAge is modelled as a time slope. Random intercept and slope per patient
-    rsmodel <- lmer(log(get(currmet) + 1) ~ CST + GestationalAge +  BMI + Ethnicity  + (0 + GestationalAge|SubjectID) + (1|SubjectID), 
+    rsmodel <- lmer(log(get(currmet) + 1) ~ CST + GestationalAge +  BMI + Ethnicity  + (GestationalAge||SubjectID), 
                     data=dataset,  REML=TRUE)
     
     cst_pairwise_contrasts <- data.frame(emmeans(rsmodel, pairwise~CST, 
@@ -342,6 +342,58 @@ feature_box_plot <- ggplot(boxplot_DFrame, aes(x=Study, y=as.numeric(as.characte
 ggsave('./LinearMixedModels_DESI-MS/ExampleFeatures/Thiomalic acid.png', feature_box_plot)
 ```
 
+# Overlap between LDom/LDepl and Gestational Age signatures.
+```{r}
+library(ggvenn)
+gestationalAgeSignature_vmet2 <- corrected_desi_neg_vmet2[corrected_desi_neg_vmet2[, 24] < 0.05, 1]
+LDeplSignature_vmet2 <- corrected_desi_neg_vmet2[corrected_desi_neg_vmet2[, 23] < 0.05, 1]
+vmet2_signatures_neg <- list(`Gestational Age`=gestationalAgeSignature_vmet2, `LDOM\\DEPL`=LDeplSignature_vmet2)
+
+gestationalAgeSignature_vmet2 <- corrected_desi_pos_vmet2[corrected_desi_pos_vmet2[, 24] < 0.05, 1]
+LDeplSignature_vmet2 <- corrected_desi_pos_vmet2[corrected_desi_pos_vmet2[, 23] < 0.05, 1]
+vmet2_signatures_pos <- list(`Gestational Age`=gestationalAgeSignature_vmet2, `LDOM\\DEPL`=LDeplSignature_vmet2)
+
+gestationalAgeSignature_vmet <- corrected_desi_neg_vmet[corrected_desi_neg_vmet[, 18] < 0.05, 1]
+LDeplSignature_vmet <- corrected_desi_neg_vmet[corrected_desi_neg_vmet[, 17] < 0.05, 1]
+vmet_signatures_neg <- list(`Gestational Age`=gestationalAgeSignature_vmet, `LDOM\\DEPL`=LDeplSignature_vmet)
+
+gestationalAgeSignature_vmet <- corrected_desi_pos_vmet[corrected_desi_pos_vmet[, 18] < 0.05, 1]
+LDeplSignature_vmet <- corrected_desi_pos_vmet[corrected_desi_pos_vmet[, 17] < 0.05, 1]
+vmet_signatures_pos <- list(`Gestational Age`=gestationalAgeSignature_vmet, `LDOM\\DEPL`=LDeplSignature_vmet)
+
+vmet2_neg <- ggvenn(vmet2_signatures_neg, fill_color = c("#0073C2FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+ggsave('./LinearMixedModels_DESI-MS/VMET2_Neg_GestationalAgeLDepleted_Venn.png', vmet2_neg)
+
+vmet_neg <- ggvenn(vmet_signatures_neg, fill_color = c("#0073C2FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+ggsave('./LinearMixedModels_DESI-MS/VMET_Neg_GestationalAgeLDepleted_Venn.png', vmet_neg)
 
 
+vmet2_pos <- ggvenn(vmet2_signatures_pos, fill_color = c("#0073C2FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+ggsave('./LinearMixedModels_DESI-MS/VMET2_Pos_GestationalAgeLDepleted_Venn.png', vmet2_pos)
 
+
+vmet_pos <- ggvenn(vmet_signatures_pos, fill_color = c("#0073C2FF", "#CD534CFF"),
+  stroke_size = 0.5, set_name_size = 4)
+ggsave('./LinearMixedModels_DESI-MS/VMET_Pos_GestationalAgeLDepleted_Venn.png', vmet_pos)
+
+```
+
+```{r}
+
+immuneMarkers <- readxl::read_xlsx('../Immune Metabolic Association/CVF_ImmuneMarkers_Analysis/VMET2_DESI_NEG_Immune_LinearModels.xlsx', sheet='CVF MBL')
+
+formatMz <- function(x) {sapply(x, FUN=function(y){format(round(y, 8), nsmall = 8)})}
+
+immune_signature <- immuneMarkers[immuneMarkers$R2_qval < 0.05, 2]$Metabolite
+# immune_signature <- immuneMarkers[immuneMarkers$R2_qval < 0.05 & immuneMarkers$R2 > 0.1, 2]$Metabolite
+
+vmet2_immune_pos <- list(`Gestational Age`= formatMz(as.numeric(gestationalAgeSignature_vmet2)), `LDOM\\DEPL`=formatMz(as.numeric(LDeplSignature_vmet2)), Immune=formatMz(as.numeric(immune_signature)))
+
+ggvenn(vmet2_immune_pos, fill_color = c("#0073C2FF", "#CD534CFF", "#EFC000FF"),
+  stroke_size = 0.5, set_name_size = 4)
+
+
+```

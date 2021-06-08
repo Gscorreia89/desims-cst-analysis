@@ -17,7 +17,7 @@ library(caret)
 library(plotROC)
 library(pROC)
 library(dplyr)
-set.seed(239538)
+set.seed(184375)
 # Set ggplot titles to appear at center
 ggplot() + theme(plot.title = element_text(hjust = 'center'))
 registerDoParallel(cores=22)
@@ -58,11 +58,14 @@ cat(paste("VMET2 16S CLR Matrix: ", dim(vmet216S)[1], "samples, ", dim(vmet216S)
 In this analysis we examine if the 16S profiles can be directly used to predict preterm birth. A helper function, *random_forest_comparison_Outcome*, is defined in the next cell to handle the model fitting and cross-validation. The interface from the *caret* package is used to fit the random forest models and perform a repeated (n=15 times) 7-fold stratified cross validation. This function will then be applied to predict preterm birth using the centered-log-ratio transformed 16S data matrices. 
 ```{r}
 # Prediction of preterm 
-random_forest_comparison_Outcome <- function(dataset, first_microbe_idx, outcome_var='Outcome') {
-   dataset_train <- dataset[, colnames(dataset)[first_microbe_idx:dim(dataset)[2]]]
+random_forest_comparison_Outcome <- function(dataset, first_variable_idx, outcome_var='Outcome') {
+   dataset_train <- dataset[, colnames(dataset)[first_variable_idx:dim(dataset)[2]]]
    dataset_train <- cbind(Outcome=dataset[outcome_var], dataset_train)
    
    dataset_train$Outcome <- factor(dataset_train$Outcome)
+   dataset_train <- subset(dataset_train, Outcome %in% c("Preterm", "Term"))
+   dataset_train$Outcome <- droplevels(dataset_train$Outcome)
+   
    
    fit_control <- trainControl(method = "repeatedcv", repeats=15, classProbs = TRUE,
                               number = 7, summaryFunction=multiClassSummary, 
@@ -108,18 +111,18 @@ return(subsetDataset)
 ```{r}
 ## VMET 
 # 1st Trimester
-vmet16S_1Trim <- getNearestSample(vmet16S, 8, max_week_difference = 7)
-ptb_vmet_1Trim <- random_forest_comparison_Outcome(subset(vmet16S_1Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
+vmet16S_1Trim <- getNearestSample(vmet16S, 7, max_week_difference = 7)
+ptb_vmet_1Trim <- random_forest_comparison_Outcome(subset(vmet16S_1Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
 rm(vmet16S_1Trim)
 
 # 2nd Trimester
-vmet16S_2Trim <- getNearestSample(vmet16S, 20, max_week_difference = 7)
-ptb_vmet_2Trim <- random_forest_comparison_Outcome(subset(vmet16S_2Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
+vmet16S_2Trim <- getNearestSample(vmet16S, 19, max_week_difference = 5)
+ptb_vmet_2Trim <- random_forest_comparison_Outcome(subset(vmet16S_2Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
 rm(vmet16S_2Trim)
 
 # 3rd Trimester
-vmet16S_3Trim <- getNearestSample(vmet16S, 32, max_week_difference = 7)
-ptb_vmet_3Trim <- random_forest_comparison_Outcome(subset(vmet16S_3Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
+vmet16S_3Trim <- getNearestSample(vmet16S, 32, max_week_difference = 8)
+ptb_vmet_3Trim <- random_forest_comparison_Outcome(subset(vmet16S_3Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_microbe_idx_vmet, outcome_var = 'Outcome')
 rm(vmet16S_3Trim)
 ```
 Export result summary and ROC curves
@@ -144,18 +147,18 @@ rm(ROCPlot)
 ```{r}
 ## VMET2
 # 1st Trimester
-vmet216S_1Trim <- getNearestSample(vmet216S, 8,  max_week_difference = 7)
-ptb_vmet2_1Trim <- random_forest_comparison_Outcome(subset(vmet216S_1Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
+vmet216S_1Trim <- getNearestSample(vmet216S, 7,  max_week_difference = 7)
+ptb_vmet2_1Trim <- random_forest_comparison_Outcome(subset(vmet216S_1Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
 rm(vmet216S_1Trim)
 
 # 2nd Trimester
-vmet216S_2Trim <- getNearestSample(vmet216S, 20,  max_week_difference = 7)
-ptb_vmet2_2Trim <- random_forest_comparison_Outcome(subset(vmet216S_2Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
+vmet216S_2Trim <- getNearestSample(vmet216S, 19,  max_week_difference = 5)
+ptb_vmet2_2Trim <- random_forest_comparison_Outcome(subset(vmet216S_2Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
 rm(vmet216S_2Trim)
 
 # 3rd Trimester
-vmet216S_3Trim <- getNearestSample(vmet216S, 32,  max_week_difference = 7)
-ptb_vmet2_3Trim <- random_forest_comparison_Outcome(subset(vmet216S_3Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
+vmet216S_3Trim <- getNearestSample(vmet216S, 32,  max_week_difference = 8)
+ptb_vmet2_3Trim <- random_forest_comparison_Outcome(subset(vmet216S_3Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_microbe_idx_vmet2, outcome_var = 'Outcome')
 rm(vmet216S_3Trim)
 ```
 

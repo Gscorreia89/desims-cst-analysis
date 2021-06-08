@@ -17,7 +17,7 @@ library(caret)
 library(plotROC)
 library(pROC)
 library(dplyr)
-set.seed(239538)
+set.seed(483467)
 # Set ggplot titles to appear at center
 ggplot() + theme(plot.title = element_text(hjust = 'center'))
 registerDoParallel(cores=22)
@@ -45,8 +45,8 @@ cat(paste("VMET2 16S Immune marker Matrix: ", dim(vmet2_immune)[1], "samples, ",
 In this analysis we examine if the immune markers can be directly used to predict preterm birth. A helper function, *random_forest_comparison_Outcome*, is defined in the next cell to handle the model fitting and cross-validation. The interface from the *caret* package is used to fit the random forest models and perform a repeated (n=15 times) 7-fold stratified cross validation. This function will then be applied to predict preterm birth using the log-transformed immune marker data matrices. 
 ```{r}
 # Prediction of preterm 
-random_forest_comparison_Outcome <- function(dataset, first_microbe_idx, outcome_var='Outcome') {
-   dataset_train <- dataset[, colnames(dataset)[first_microbe_idx:dim(dataset)[2]]]
+random_forest_comparison_Outcome <- function(dataset, first_variable_idx, outcome_var='Outcome') {
+   dataset_train <- dataset[, colnames(dataset)[first_variable_idx:dim(dataset)[2]]]
    dataset_train <- cbind(Outcome=dataset[outcome_var], log(dataset_train))
    
    dataset_train <- dataset_train[complete.cases(dataset_train), ]
@@ -96,18 +96,18 @@ return(subsetDataset)
 ```{r}
 ## VMET2
 # 1st Trimester
-immune_1Trim <- getNearestSample(vmet2_immune, 8,  max_week_difference = 7)
-ptb_vmet2_1Trim <- random_forest_comparison_Outcome(subset(immune_1Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_immune_idx_vmet2, outcome_var = 'Outcome')
+immune_1Trim <- getNearestSample(vmet2_immune, 7,  max_week_difference = 7)
+ptb_vmet2_1Trim <- random_forest_comparison_Outcome(subset(immune_1Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_immune_idx_vmet2, outcome_var = 'Outcome')
 rm(immune_1Trim)
 
 # 2nd Trimester
-immune_2Trim <- getNearestSample(vmet2_immune, 20,  max_week_difference = 7)
-ptb_vmet2_2Trim <- random_forest_comparison_Outcome(subset(immune_2Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_immune_idx_vmet2, outcome_var = 'Outcome')
+immune_2Trim <- getNearestSample(vmet2_immune, 19,  max_week_difference = 5)
+ptb_vmet2_2Trim <- random_forest_comparison_Outcome(subset(immune_2Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_immune_idx_vmet2, outcome_var = 'Outcome')
 rm(immune_2Trim)
 
 # 3rd Trimester
-immune_3Trim <- getNearestSample(vmet2_immune, 32,  max_week_difference = 7)
-ptb_vmet2_3Trim <- random_forest_comparison_Outcome(subset(immune_3Trim, Outcome %in% c("Term", "Preterm")), first_microbe_idx = first_immune_idx_vmet2, outcome_var = 'Outcome')
+immune_3Trim <- getNearestSample(vmet2_immune, 32,  max_week_difference = 8)
+ptb_vmet2_3Trim <- random_forest_comparison_Outcome(subset(immune_3Trim, Outcome %in% c("Term", "Preterm")), first_variable_idx = first_immune_idx_vmet2, outcome_var = 'Outcome')
 rm(immune_3Trim)
 ```
 

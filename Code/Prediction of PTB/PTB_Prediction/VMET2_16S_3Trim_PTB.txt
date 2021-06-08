@@ -6,12 +6,12 @@ Random Forest
 
 No pre-processing
 Resampling: Cross-Validated (7 fold, repeated 15 times) 
-Summary of sample sizes: 153, 153, 154, 154, 153, 154, ... 
+Summary of sample sizes: 153, 153, 153, 154, 154, 153, ... 
 Resampling results:
 
-  logLoss    AUC        prAUC      Accuracy   Kappa       F1         Sensitivity  Specificity  Pos_Pred_Value  Neg_Pred_Value  Precision   Recall     
-  0.5842438  0.5686353  0.5084676  0.8071941  -0.0487219  0.2738095  0.007142857  0.9555556    0.01455026      0.8381979       0.01455026  0.007142857
-  Detection_Rate  Balanced_Accuracy
-  0.001128205     0.4813492        
+  logLoss    AUC       prAUC      Accuracy   Kappa        F1         Sensitivity  Specificity  Pos_Pred_Value  Neg_Pred_Value  Precision 
+  0.5660137  0.567736  0.5106829  0.8103297  -0.04272041  0.3015873  0.007142857  0.959328     0.02083333      0.8386934       0.02083333
+  Recall       Detection_Rate  Balanced_Accuracy
+  0.007142857  0.001113553     0.4832354        
 
 Tuning parameter 'mtry' was held constant at a value of 69

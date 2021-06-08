@@ -1,0 +1,237 @@
+---
+title: "CST Typing by LC-MS - Detection of Lactobacillus Depleted Status"
+output: html_notebook
+---
+
+```{r "setup", include=FALSE}
+require("knitr")
+opts_knit$set(root.dir='./')
+```
+
+Load the required packages
+```{r, include=FALSE}
+library(lme4)
+library(ggplot2)
+library(sjPlot)
+library(doParallel)
+library(r2glmm)
+library(readr)
+library(reshape2)
+library(MuMIn)
+library(emmeans)
+library(pROC)
+
+set.seed(3046802)
+# Set ggplot titles to appear at center
+ggplot() + theme(plot.title = element_text(hjust = 'center'))
+registerDoParallel(cores=22)
+dir.create('./LinearMixedModels_LC-MS/', recursive=TRUE)
+
+```
+
+# Data import
+Load the VMET LC-MS datasets
+```{r, warning=F, echo=F, message=F}
+# Load the DESI-MS datasets
+lc_lneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_LNEG.csv", header=1, sep=',')
+lc_lpos_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_LPOS.csv", header=1, sep=',')
+lc_rneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_RNEG.csv", header=1, sep=',')
+lc_rpos_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_RPOS.csv", header=1, sep=',')
+lc_hneg_vmet <- read.table("../../Data/LC-MS/VMET_LC-MS_HNEG.csv", header=1, sep=',')
+
+# Load the Study Metadata
+study_metadata_vmet <- read_csv("../../Data/VMET_Metadata.csv")
+cst_metadata_vmet <- read_csv("../../Data/VMET_CSTAssignment.csv")
+
+study_metadata_vmet <- merge(study_metadata_vmet, cst_metadata_vmet, by='Seq_ID')
+
+# Merge with the clinical metadata
+lc_lneg_vmet <- merge(study_metadata_vmet, lc_lneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_lpos_vmet <- merge(study_metadata_vmet, lc_lpos_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_rneg_vmet <- merge(study_metadata_vmet, lc_rneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_rpos_vmet <- merge(study_metadata_vmet, lc_rpos_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+lc_hneg_vmet <- merge(study_metadata_vmet, lc_hneg_vmet, by.x="DESI_ID", by.y="Sample.ID", sort=FALSE)
+
+rm(study_metadata_vmet)
+rm(cst_metadata_vmet)
+```
+
+Overview of dataset dimensions
+```{r}
+# VMET LC-MS Lipid Negative Mode
+cat(paste("VMET LC-MS Lipid Negative Mode Matrix: ", dim(lc_lneg_vmet)[1], "samples, ", dim(lc_lneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_lneg_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Lipid Positive Mode
+cat(paste("VMET LC-MS Lipid Positive Mode Matrix: ", dim(lc_lpos_vmet)[1], "samples, ", dim(lc_lpos_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_lpos_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Reversed Phase Negative Mode
+cat(paste("VMET LC-MS Reversed Phase Negative Mode Matrix: ", dim(lc_rneg_vmet)[1], "samples, ", dim(lc_rneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_rneg_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS Reversed Phase Positive Mode
+cat(paste("VMET LC-MS Reversed Phase Positive Mode Matrix: ", dim(lc_rpos_vmet)[1], "samples, ", dim(lc_rpos_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_rpos_first_metabolite_idx_vmet <- 28
+
+# VMET LC-MS HILIC Negative Mode
+cat(paste("VMET LC-MS HILIC Negative Mode Matrix: ", dim(lc_hneg_vmet)[1], "samples, ", dim(lc_hneg_vmet)[2] - 28, "metabolic features", "\n"))
+# Assign a variable with the index of the first column corresponding to an MS signal
+lc_hneg_first_metabolite_idx_vmet <- 28
+```
+
+## Linear mixed effect modelling of the VMET Dataset
+In the next cell we define an utility function which fits a linear mixed model for a single metabolic feature and retrieves the main estimates and p-values. This function will be applied in parallel to all variables in a DESI-MS dataset. This version of the function is tailored for the VMET cohort metadata naming conventions. Model is adjusted for CST, GestationalAge, BMI, Ethnicity and Age, with a random slope and intercept per individual. Contrasts for differences between CSTs, including LDominant (average of I, II, III, V) vs LDepleted CST (IV) are calculated for mid-Gestation (20 weeks), with maternal age = 30, BMI=25 and averaged over all Ethnicity levels. Comparisons between early and late gestation (36 vs 8 weeks) are also calculated, with maternal age=30, BMI=25 and averaged over all Community State Types and Ethnicity levels.
+```{r}
+fit_lmm_beta_and_pvalues_vmet <- function(dataset, var) {
+  
+    tryCatch({
+      
+    currmet <- colnames(dataset)[var]
+    
+    # LME model were GestationalAge is modelled as a time slope. Random intercept and slope per patient
+    rsmodel <- lmer(log(get(currmet) + 1) ~ CST + GestationalAge +  BMI + Ethnicity  + (GestationalAge||SubjectID), 
+                    data=dataset,  REML=TRUE)
+    
+    cst_pairwise_contrasts <- data.frame(emmeans(rsmodel, pairwise~CST, 
+                                                  at=list(GestationalAge=20,  BMI=25), adjust='None')$contrast)
+    gestage_contrasts <- data.frame(emmeans(rsmodel, revpairwise ~ GestationalAge, 
+                                            at=list(GestationalAge=c(8, 36), BMI=25), adjust='None')$contrast)
+    
+    cst_means <- emmeans(rsmodel, 'CST',  at=list(GestationalAge=20, BMI=25))
+    
+    lactobacillusDepleted <- data.frame(contrast(cst_means, list(LDepleted=c(-1/4, -1/4, -1/4, 1, -1/4, 0)),  
+                                                             at=list(GestationalAge=20, BMI=25), 
+                                                             adjust='None'))
+    
+    pvalues <- c(cst_pairwise_contrasts[, 6], lactobacillusDepleted[, 6], gestage_contrasts[, 6])
+    tvalues <- c(cst_pairwise_contrasts[, 5], lactobacillusDepleted[, 5], gestage_contrasts[, 5])
+    
+    contrast_names <- c(as.character(cst_pairwise_contrasts[ ,1]), as.character(lactobacillusDepleted[, 1]), as.character(gestage_contrasts[, 1]))
+
+    contrast_pval_names <- lapply(contrast_names, FUN=function(x) {paste(x, '_pval')})
+    contrast_tval_names <- lapply(contrast_names, FUN=function(x) {paste(x, '_t.ratio')})
+
+    res_frame <- data.frame(cbind(substring(currmet, first=2), t(pvalues), t(tvalues)))
+    colnames(res_frame) <- c("Metabolite", contrast_pval_names, contrast_tval_names)
+    
+    return(res_frame)
+        
+    }, error = function(err){stop()})
+}
+```
+
+Run the Linear Mixed Effects modeling in the VMET LC-MS lipid Positive mode VMET data
+```{r, warning=F, echo=F, message=F}
+lme_lpos_vmet  <- foreach(var=lpos_first_metabolite_idx_vmet:length(lc_lpos_vmet), .combine=rbind) %dopar% {
+    tryCatch({
+        return(fit_lmm_beta_and_pvalues_vmet(lc_lpos_vmet, var))
+    }, error = function(err) {
+       # In case of crash fill a row of NA's
+       currmet_parsed <- substring(colnames(lc_lpos_vmet)[var], first=2)
+       return(c(currmet_parsed, rep(NA,34)))
+    })
+}
+
+
+lme_lpos_vmet[2:dim(lme_lpos_vmet )[2]] <- apply(lme_lpos_vmet[, 2:dim(lme_lpos_vmet )[2]], FUN = function(x) {as.numeric(as.character(x))}, 2)
+
+write.csv(lme_lpos_vmet , './LinearMixedModels_LC-MS/VMET_LPOS_LME_CST.csv')
+# Apply Benjamini-Hochberg FDR correction at "contrast"/comparison level
+lme_lpos_vmet_corrected <- cbind(Metabolite=as.numeric(as.character(lme_lpos_vmet[, 1])), apply(lme_lpos_vmet[, 2:18], 2, p.adjust, method='BH'))
+
+write.csv(lme_lpos_vmet_corrected  , './LinearMixedModels_LC-MS/VMET_LPOS_LME_CST_BH.csv')
+```
+
+Run the Linear Mixed Effects modeling in the VMET LC-MS lipid Negative mode VMET data
+```{r, warning=F, echo=F, message=F}
+lme_lneg_vmet  <- foreach(var=lneg_first_metabolite_idx_vmet:length(lc_lneg_vmet), .combine=rbind) %dopar% {
+    tryCatch({
+        return(fit_lmm_beta_and_pvalues_vmet(lc_lneg_vmet, var))
+    }, error = function(err) {
+       # In case of crash fill a row of NA's
+       currmet_parsed <- substring(colnames(lc_lneg_vmet)[var], first=2)
+       return(c(currmet_parsed, rep(NA,34)))
+    })
+}
+
+
+lme_lneg_vmet[2:dim(lme_lneg_vmet )[2]] <- apply(lme_lneg_vmet[, 2:dim(lme_lneg_vmet )[2]], FUN = function(x) {as.numeric(as.character(x))}, 2)
+
+write.csv(lme_lneg_vmet , './LinearMixedModels_LC-MS/VMET_LNEG_LME_CST.csv')
+# Apply Benjamini-Hochberg FDR correction at "contrast"/comparison level
+lme_lneg_vmet_corrected <- cbind(Metabolite=as.numeric(as.character(lme_lneg_vmet[, 1])), apply(lme_lneg_vmet[, 2:18], 2, p.adjust, method='BH'))
+
+write.csv(lme_lneg_vmet_corrected  , './LinearMixedModels_LC-MS/VMET_LNEG_LME_CST_BH.csv')
+```
+
+Run the Linear Mixed Effects modeling in the VMET LC-MS reversed phase Positive mode VMET data
+```{r, warning=F, echo=F, message=F}
+lme_rpos_vmet  <- foreach(var=rpos_first_metabolite_idx_vmet:length(lc_rpos_vmet), .combine=rbind) %dopar% {
+    tryCatch({
+        return(fit_lmm_beta_and_pvalues_vmet(lc_rpos_vmet, var))
+    }, error = function(err) {
+       # In case of crash fill a row of NA's
+       currmet_parsed <- substring(colnames(lc_rpos_vmet)[var], first=2)
+       return(c(currmet_parsed, rep(NA,34)))
+    })
+}
+
+
+lme_rpos_vmet[2:dim(lme_lpos_vmet )[2]] <- apply(lme_rpos_vmet[, 2:dim(lme_rpos_vmet )[2]], FUN = function(x) {as.numeric(as.character(x))}, 2)
+
+write.csv(lme_rpos_vmet , './LinearMixedModels_LC-MS/VMET_RPOS_LME_CST.csv')
+# Apply Benjamini-Hochberg FDR correction at "contrast"/comparison level
+lme_rpos_vmet_corrected <- cbind(Metabolite=as.numeric(as.character(lme_rpos_vmet[, 1])), apply(lme_rpos_vmet[, 2:18], 2, p.adjust, method='BH'))
+
+write.csv(lme_rpos_vmet_corrected  , './LinearMixedModels_LC-MS/VMET_RPOS_LME_CST_BH.csv')
+```
+
+Run the Linear Mixed Effects modeling in the VMET LC-MS lipid Negative mode VMET data
+```{r, warning=F, echo=F, message=F}
+lme_rneg_vmet  <- foreach(var=rneg_first_metabolite_idx_vmet:length(lc_rneg_vmet), .combine=rbind) %dopar% {
+    tryCatch({
+        return(fit_lmm_beta_and_pvalues_vmet(lc_rneg_vmet, var))
+    }, error = function(err) {
+       # In case of crash fill a row of NA's
+       currmet_parsed <- substring(colnames(lc_rneg_vmet)[var], first=2)
+       return(c(currmet_parsed, rep(NA,34)))
+    })
+}
+
+
+lme_rneg_vmet[2:dim(lme_rneg_vmet )[2]] <- apply(lme_rneg_vmet[, 2:dim(lme_rneg_vmet )[2]], FUN = function(x) {as.numeric(as.character(x))}, 2)
+
+write.csv(lme_rneg_vmet , './LinearMixedModels_LC-MS/VMET_RNEG_LME_CST.csv')
+# Apply Benjamini-Hochberg FDR correction at "contrast"/comparison level
+lme_rneg_vmet_corrected <- cbind(Metabolite=as.numeric(as.character(lme_rneg_vmet[, 1])), apply(lme_rneg_vmet[, 2:18], 2, p.adjust, method='BH'))
+
+write.csv(lme_rneg_vmet_corrected  , './LinearMixedModels_LC-MS/VMET_RNEG_LME_CST_BH.csv')
+```
+
+Run the Linear Mixed Effects modeling in the VMET LC-MS lipid Negative mode VMET data
+```{r, warning=F, echo=F, message=F}
+lme_hneg_vmet  <- foreach(var=hneg_first_metabolite_idx_vmet:length(lc_hneg_vmet), .combine=rbind) %dopar% {
+    tryCatch({
+        return(fit_lmm_beta_and_pvalues_vmet(lc_hneg_vmet, var))
+    }, error = function(err) {
+       # In case of crash fill a row of NA's
+       currmet_parsed <- substring(colnames(lc_hneg_vmet)[var], first=2)
+       return(c(currmet_parsed, rep(NA,34)))
+    })
+}
+
+
+lme_hneg_vmet[2:dim(lme_hneg_vmet )[2]] <- apply(lme_hneg_vmet[, 2:dim(lme_hneg_vmet )[2]], FUN = function(x) {as.numeric(as.character(x))}, 2)
+
+write.csv(lme_hneg_vmet , './LinearMixedModels_LC-MS/VMET_HNEG_LME_CST.csv')
+# Apply Benjamini-Hochberg FDR correction at "contrast"/comparison level
+lme_hneg_vmet_corrected <- cbind(Metabolite=as.numeric(as.character(lme_hneg_vmet[, 1])), apply(lme_hneg_vmet[, 2:18], 2, p.adjust, method='BH'))
+
+write.csv(lme_hneg_vmet_corrected  , './LinearMixedModels_LC-MS/VMET_HNEG_LME_CST_BH.csv')
+```
+

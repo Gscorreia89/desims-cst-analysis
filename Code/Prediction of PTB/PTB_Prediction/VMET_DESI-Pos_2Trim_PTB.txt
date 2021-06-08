@@ -1,0 +1,17 @@
+Random Forest 
+
+ 134 samples
+1555 predictors
+   2 classes: 'Preterm', 'Term' 
+
+No pre-processing
+Resampling: Cross-Validated (7 fold, repeated 15 times) 
+Summary of sample sizes: 115, 115, 115, 115, 115, 114, ... 
+Resampling results:
+
+  logLoss    AUC        prAUC      Accuracy   Kappa         F1         Sensitivity  Specificity  Pos_Pred_Value  Neg_Pred_Value  Precision  Recall    
+  0.4909143  0.5274058  0.4906294  0.8235589  -0.004297896  0.4266667  0.01507937   0.9821429    0.1321839       0.8357771       0.1321839  0.01507937
+  Detection_Rate  Balanced_Accuracy
+  0.002481203     0.4986111        
+
+Tuning parameter 'mtry' was held constant at a value of 518.6667
