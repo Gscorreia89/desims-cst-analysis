@@ -13,8 +13,6 @@ Import the required packages
 ```{r, include=FALSE}
 library(readr)
 library(readxl)
-library(zCompositions)
-library(ALDEx2)
 library(propr)
 library(ggplot2)
 library(doParallel)
