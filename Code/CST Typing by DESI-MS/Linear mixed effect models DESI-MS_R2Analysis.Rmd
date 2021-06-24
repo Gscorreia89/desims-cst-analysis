@@ -1,5 +1,5 @@
 ---
-title: "CST Typing by DESI-MS - metabolic signals associated with community state types - Linear mixed effect model analysis"
+title: "CST Typing by DESI-MS - R2 Linear mixed effect model analysis"
 output: html_notebook
 ---
 
@@ -183,50 +183,8 @@ fit_lmm_r2estimates <- function(dataset, var) {
     }, error = function(err){stop()})
 }
 ```
-# Version with partR2, new library
-```{r}
-fit_lmm_r2estimates <- function(dataset, var) {
-    tryCatch({
-      
-      # Get metabolite name
-      currmet <- colnames(dataset)[var]
-      
-      model_variables <- c(currmet, 'CST', 'GestationalAge', 'Age', 'BMI', 'Ethnicity', 'SubjectID')
-      complete_idx <- complete.cases(dataset[model_variables])
-      
-      model_formula <- as.formula(paste0(currmet, " ~ CST + GestationalAge + Age +  BMI + Ethnicity + (GestationalAge||SubjectID)"))
-      currentDataset <- dataset[complete_idx, model_variables]
-      currentDataset[, 1] <- log(currentDataset[, 1] + 1)
-      rsmodel <- lmer(model_formula, data=currentDataset,  REML=TRUE)
-      
-      r2_partial <- data.frame(r2beta(rsmodel, method='kr'))
-      
-      rownames(r2_partial) <- r2_partial$Effect
-      # Re-order rows so the row binding is coherent in foreach
-      r2_partial <- r2_partial[c('Model', 'CST', 'GestationalAge', 'BMI', 'Ethnicity', 'Age'), ]
-      mumin_r2 <- r.squaredGLMM(rsmodel)
-      r2_cond <- mumin_r2[2]
-      r2_marg <- mumin_r2[1]
-      icc <- performance::icc(rsmodel, tolerance = 1e-999)
-      
-      r2_values <- as.numeric(c(r2_partial$Rsq, r2_cond, r2_marg, icc$ICC_adjusted))
-      r2_names <- c(as.character(r2_partial$Effect), 'R2Conditional_nsj', 'R2Marginal_nsj', 'Adjusted_ICC')
-      r2_names[1] <- 'R2_Model_kr'
-      
-      pval_values <- as.numeric(c(r2_partial$pval, NA, NA, NA))
-      pval_names <- lapply(r2_names, FUN=function(x) {paste0(x, '_pval')})
-      
-      res_frame <- data.frame(cbind(substring(currmet, first=2), t(r2_values), t(pval_values)))
-      colnames(res_frame) <- c("Metabolite", r2_names, pval_names)
-      
-      return(res_frame)
-      
-    }, error = function(err){stop()})
-}
 
-```
-
-Iterate through the DESI Positive ionisation mode dataset and obtain the model R squares and the partial R squares per covariate
+Iterate through the VMET DESI Positive ionisation mode dataset and obtain the model R squares and the partial R squares per covariate
 ```{r}
 r2_estimates_desi_neg_vmet <- foreach(var=desineg_first_metabolite_idx_vmet:dim(desi_neg_vmet)[2], .combine=rbind) %dopar% {
     tryCatch({
@@ -243,6 +201,7 @@ r2_estimates_desi_neg_vmet[2:dim(r2_estimates_desi_neg_vmet)[2]] <- apply(r2_est
 write.csv(r2_estimates_desi_neg_vmet, './LinearMixedModels_DESI-MS/rSquared/VMET_DESI_NEG_LME_R2.csv')
 ```
 
+Iterate through the VMET DESI Negative ionisation mode dataset and obtain the model R squares and the partial R squares per covariate
 ```{r}
 r2_estimates_desi_pos_vmet <- foreach(var=desipos_first_metabolite_idx_vmet:dim(desi_pos_vmet)[2], .combine=rbind) %dopar% {
     tryCatch({
@@ -260,7 +219,7 @@ r2_estimates_desi_pos_vmet[2:dim(r2_estimates_desi_pos_vmet)[2]] <- apply(r2_est
 write.csv(r2_estimates_desi_pos_vmet, './LinearMixedModels_DESI-MS/rSquared/VMET_DESI_POS_LME_R2.csv')
 ```
 
-Iterate through the DESI Positive ionisation mode dataset and obtain the model R squares and the partial R squares per covariate
+Iterate through the VMET 2 DESI Negative ionisation mode dataset and obtain the model R squares and the partial R squares per covariate
 ```{r}
 r2_estimates_desi_neg_vmet2 <- foreach(var=desineg_first_metabolite_idx_vmet2:dim(desi_neg_vmet2)[2], .combine=rbind) %dopar% {
     tryCatch({
@@ -277,6 +236,7 @@ r2_estimates_desi_neg_vmet2[2:dim(r2_estimates_desi_neg_vmet2)[2]] <- apply(r2_e
 write.csv(r2_estimates_desi_neg_vmet2, './LinearMixedModels_DESI-MS/rSquared/VMET2_DESI_NEG_LME_R2.csv')
 ```
 
+Iterate through the VMET 2 DESI Positive ionisation mode dataset and obtain the model R squares and the partial R squares per covariate
 ```{r}
 r2_estimates_desi_pos_vmet2 <- foreach(var=desipos_first_metabolite_idx_vmet2:dim(desi_pos_vmet2)[2], .combine=rbind) %dopar% {
     tryCatch({
@@ -293,12 +253,8 @@ r2_estimates_desi_pos_vmet2[2:dim(r2_estimates_desi_pos_vmet2)[2]] <- apply(r2_e
 
 write.csv(r2_estimates_desi_pos_vmet2, './LinearMixedModels_DESI-MS/rSquared/VMET2_DESI_POS_LME_R2.csv')
 ```
-```{r}
 
-
-```
-
-# Generate a stacked barplot barplot with the 
+# Generate a stacked barplot barplot with the R2 measures
 ```{r}
 plotR2 <- function(r2_results, top_n) {
   
@@ -329,6 +285,7 @@ plotR2 <- function(r2_results, top_n) {
 }
 ```
 
+# Plots for top 100 features (ranked by variance explained in linear model, including the SubjectID) 
 ```{r}
 vmet2_neg_top100 <- plotR2(r2_estimates_desi_neg_vmet2, 100)
 vmet_neg_top100 <- plotR2(r2_estimates_desi_neg_vmet, 100)
@@ -341,11 +298,10 @@ ggsave('./rSquared/VMET2_DESIPOS_100R2.png', vmet2_pos_top100)
 ggsave('./rSquared/VMET_DESIPOS_100R2.png', vmet_pos_top100)
 ```
 
-
+# Variance explained for the Markers shown in Figure 1 (B) - main replicated hits of linear mixed modeling analysis.
 ```{r}
 library(xlsx)
 ldepl_markers <- read.xlsx('../../Data/Extended Data Table 2 LDOM vs LDEPL.xlsx', sheetIndex=1)
-immune_markers <- read.xlsx('../../Data/Extended Data Table 3 ImmuneMarkers.xlsx', sheetIndex=1)#
 
 ldepl_markers_neg <- subset(ldepl_markers, DESI.MS.mode =='negative')
 
@@ -361,55 +317,14 @@ formatMz <- function(x) {sapply(x, FUN=function(y){format(round(y, 4), nsmall = 
 
 immune_vmet2_neg <- r2_estimates_desi_neg_vmet2[formatMz(as.numeric(r2_estimates_desi_neg_vmet2$Metabolite)) %in% formatMz(immune_markers$m.z.measured), ]
 
-plotR2(ldepl_vmet_neg, 113)
-```
+vmet_neg_topMarkers <- plotR2(ldepl_vmet_neg, 150)
+vmet2_neg_topMarkers <- plotR2(ldepl_vmet2_neg, 150)
 
+vmet_pos_topMarkers <- plotR2(ldepl_vmet_pos, 150)
+vmet2_pos_topMarkers <- plotR2(ldepl_vmet2_pos, 150)
 
-
-```{r}
-# Subset the variables containing r2 measures for the fixed effects
-r2_values_set <- r2_estimates_desi_neg_vmet[, c("Metabolite", "CST", "GestationalAge", "Age", "BMI", "Ethnicity", "R2Conditional_nsj")]
-
-r2_values_set[, 8] <- r2_values_set[, 7] - rowSums(r2_values_set[, 2:6])
-r2_values_set[r2_values_set[, 8] < 0, 8] <- 0
-
-colnames(r2_values_set)[8] <- 'R2'
-
-melted <- melt(r2_values_set, 'Metabolite')
-
-melted$Metabolite <- round(as.numeric(as.character(melted$Metabolite)), digits=3)
-
-#melted_sort <- melted[order(- as.numeric(melted$value), melted$Metabolite, melted$variable), ]
-melted$value <- as.numeric(melted$value)
-
-covar_to_sort_by <- 'R2Conditional_nsj'
-r2_covar <- subset(melted, variable == covar_to_sort_by)
-r2_covar <- r2_covar[order(-r2_covar$value), ]
-melted$Metabolite <- round(as.numeric(as.character(melted$Metabolite)), digits=3)
-melted$variable <- factor(melted$variable, levels = c('R2Conditional_nsj', 'R2', 'CST', 'GestationalAge', 'Ethnicity', 'BMI', 'Age'))
-top_n <- 1000
-top_n_mets <- r2_covar[1:top_n, 1]
-
-plotDFrame <- melted[melted$Metabolite %in% top_n_mets, ]
-plotDFrame <- subset(plotDFrame, variable != 'R2Conditional_nsj')
-# +  geom_bar(stat='identity', position='identity', alpha=1)
-ggplot(plotDFrame, aes(fill=variable, y=as.numeric(value), x=factor(Metabolite, r2_covar$Metabolite[1:top_n]))) +  geom_bar(stat='identity', position='stack', alpha=1) + ylab('R2') + xlab('Metabolite') + theme( axis.text.x = element_blank(),
-  axis.ticks.x = element_blank())
-#+ geom_text(aes(label = as.numeric(value)), size = 2) 
-```
-
-```{r}
-ggplot(r2_estimates_desi_neg_vmet) + geom_histogram(aes(x=Adjusted_ICC, fill=I('steelblue2'), col=I('red')))
-
-ggplot(r2_estimates_desi_neg_vmet) + geom_col(aes(x=Metabolite, y=Adjusted_ICC, fill=I('steelblue2'))) + theme( axis.text.x = element_blank(), axis.ticks.x = element_blank())
-```
-
-```{r}
-
-ms_profile_vmet2 <- desi_neg_vmet2[, desineg_first_metabolite_idx_vmet2:dim(desi_neg_vmet2)[2]]
-metadata <- desi_neg_vmet2[, c('CST', 'Ethnicity', 'GestationalAge', 'BMI', 'Age', 'SubjectID')]
-library(vegan)
-permanova <- adonis(ms_profile_vmet2 ~ CST + GestationalAge + Ethnicity + BMI + Age + SubjectID,
-               data = metadata, permutations=250, method = "euclidean")
-
+ggsave('./LinearMixedModels_DESI-MS/rSquared/VMET_DESINEG_R2_LDomLDeplMarkers.png', vmet_neg_topMarkers)
+ggsave('./LinearMixedModels_DESI-MS/rSquared/VMET2_DESINEG_R2_LDomLDeplMarkers.png', vmet2_neg_topMarkers)
+ggsave('./LinearMixedModels_DESI-MS/rSquared/VMET2_DESIPOS_R2_LDomLDeplMarkers.png', vmet2_pos_topMarkers)
+ggsave('./LinearMixedModels_DESI-MS/rSquared/VMET_DESIPOS_R2_LDomLDeplMarkers.png', vmet_pos_topMarkers)
 ```
