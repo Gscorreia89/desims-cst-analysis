@@ -12,6 +12,6 @@ Recommended software versions:
 * R version 4.0.2 or above
 * Specific packages used in each script are mentioned in the first cells of Jupyter or R notebooks.
 
-Apart from installing R, Python, and the required packages, no specific steps are required to install and run the 
+Apart from installing R, Python, and the required packages, no other specific steps are needed to run the 
 scripts. Some analyses use cross-validation and resampling, and therefore are computationally more demanding and might take
-a few hours to complete. We recommend running on a multicore (16 or more CPU) workstation with 32Gb RAM.
+a few hours to complete. We recommend running on a multicore (16 or more CPU) workstation with 32GB RAM.
