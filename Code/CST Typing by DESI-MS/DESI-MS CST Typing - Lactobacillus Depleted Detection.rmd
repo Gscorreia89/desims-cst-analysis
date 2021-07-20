@@ -353,7 +353,7 @@ ggsave('./Lactobacillus_Depleted_Detection_DESI-MS/Precision_Recall_Curves/VMET2
 ggsave('./Lactobacillus_Depleted_Detection_DESI-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDom_DESI_POS.png', autoplot(evalmod(mmdata_vmet_Ldom_pos), 'prc'))
 ggsave('./Lactobacillus_Depleted_Detection_DESI-MS/Precision_Recall_Curves/VMET_Precision_Recall_Curve_LDep_DESI_POS.png', autoplot(evalmod(mmdata_vmet_Ldep_pos), 'prc'))
 ```
-## Supplementary analysis - Relative Abundance alternative to Hierarchical clustering CST assignment
+## Supplementary analysis I - Relative Abundance alternative to Hierarchical clustering CST assignment
 In this cell, we repeat the "Lactobacillus Dominant" vs "Depleted" classification models, but using the "LDominant" vs "LDepleted" classification obtained from the relative abundance of Lactobacillus species in the 16s profile. Since its hard to define an objective cut-off for LDominant vs LDepleted based on relative abundance of Lactobacillus species, the CST based assignment of LDominant vs LDepleted is preferred. Nevertheless, the ROC curves and area-under-the curve obtained with this definition are similar to those obtained from the CST-based criteria.
 ```{r}
 # Fit models to VMET2 
@@ -402,7 +402,7 @@ roc_Ldepleted_desi <- ggplot(desi_roc_data,
 ggsave(filename='./Lactobacillus_Depleted_Detection_DESI-MS/DESI-MS_LactobacillusDepleted_RelativeAbundance_ROC.png', roc_Ldepleted_desi)
 ```
 
-## Supplementary analysis - Comparison of the out-of-bag (OOB) and Cross-validation performance estimates.
+## Supplementary analysis II - Comparison of the out-of-bag (OOB) and Cross-validation performance estimates.
 The aim of this section is to verify the agreement between classification performance metrics estimated from the Out-of-bag predictions and the repeated 7-fold cross-validation. OOB predictions have the practical advantage that a single prediction per sample is generated, without a need to aggregate the results from multiple cross-validation rounds. Since the classification metric values obtained from the OOB predictions are very similar to their corresponding cross-validated estimates, its reasonable to use the OOB predictions in other analysis. This is theoretically expected, as OOB prediction error should be similar to a leave-one-out prediction error estimates, and this analysis is included here more as an extra sanity/validation check.
 ```{r}
 # Confusion matrix metrics calculated from the out-of-bag prediction metrics for the LDepleted detection models
@@ -456,7 +456,7 @@ capture.output(print(vmet_desi_pos_OOB_LDom), file='./Lactobacillus_Depleted_Det
 capture.output(print(vmet_desi_pos_OOB_LDep), file='./Lactobacillus_Depleted_Detection_DESI-MS/OOB_and_CV_Metrics/VMET_DESI_POS_RF_Model_CV_LDep.txt')
 ```
 
-## Supplementary analysis I - Comparison of results from models with gestational age as predictor
+## Supplementary analysis III - Comparison of results from models with gestational age as predictor
 Using gestational age as a covariate in the random effect models improves the predictive power of the LDepleted detection random forest models?
 ```{r}
 random_forest_comparison_LDepleted_GestationalAge <- function(dataset, first_metabo_idx) {
@@ -556,7 +556,7 @@ print(plot_resamp_vmet2_neg)
 dev.off()
 ```
 
-## Supplementary analysis II - Comparison of results with leave subject-out CV
+## Supplementary analysis IV - Comparison of results with leave subject-out CV
 To in
 ```{r}
 random_forest_comparison_LDepleted_LeaveGroupOut <- function(dataset, first_metabo_idx) {
