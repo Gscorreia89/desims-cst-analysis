@@ -6,3 +6,5 @@
 microbiome <-> metabolome associations. 
 
 **Immune Metabolic Association**: Predictive models and regression analysis of immune <-> metabolome interactions.
+
+**Prediction of PTB**: Prediction of preterm birth using metabolic profiles, 16s data matrices and immune markers.
