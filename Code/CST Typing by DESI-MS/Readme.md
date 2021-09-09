@@ -3,7 +3,7 @@
 The scripts in this folder contain a series of analyses correlating DESI-MS or LC-MS metabolic profiles with the 
 vaginal microbiome status.
 
-**DESI-MS Data QC.Rmd**: R notebook containing with some basic quality control checks of the DESI-MS spectra. This script 
+**DESI-MS Data QC.Rmd**: R notebook with steps for basic quality control checks of the DESI-MS spectra. This script 
 should be run before all other analyses, since it will generate a list of low quality spectra to exclude.
 
 **DESI-MS CST Typing - Lactobacillus Depleted Detection.Rmd**: R notebook with the random forest discrimination 
