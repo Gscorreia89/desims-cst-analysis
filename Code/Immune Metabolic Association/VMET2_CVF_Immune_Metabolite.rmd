@@ -476,7 +476,7 @@ ggsave('./CVF_ImmuneMarkers_Analysis/DESI_POS_ImmuneCorrelationMatrix.png', corr
 ```
 
 
-# Distribution of measured and predicted immune markers at early and late gestation. (Figures 3-B and 3-C)
+# Distribution of measured and predicted immune markers at early and late gestation. (Figures 5-B and 5-C)
 ```{r}
 # ------------------
 # MBL 
@@ -520,8 +520,7 @@ capture.output(emtrends(lmer(log(`CVF MBL (ng/ml)` + 1) ~ GestationalAge*Outcome
 
 capture.output(emmeans(lmer(log(`CVF MBL (ng/ml)` + 1) ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~GestationalAge*Outcome|LDominant_CST, at=list(GestationalAge=c(22))), file='./CVF_ImmuneMarkers_Analysis/MBL_emmeans.txt')
 
-capture.output(emtrends(lmer(MBL_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~Outcome|LDominant_CST, var='GestationalAge'), 
-               file='./CVF_ImmuneMarkers_Analysis/MBL_predicted_trends.txt')
+capture.output(emtrends(lmer(MBL_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~Outcome|LDominant_CST, var='GestationalAge'), file='./CVF_ImmuneMarkers_Analysis/MBL_predicted_trends.txt')
 capture.output(emmeans(lmer(MBL_OOB ~ GestationalAge*Outcome*LDominant_CST + (0 + GestationalAge|SubjectID) + (1|SubjectID), OOB_predictions_frame), pairwise~GestationalAge*Outcome|LDominant_CST, at=list(GestationalAge=c(22))), file='./CVF_ImmuneMarkers_Analysis/MBL_predicted_emmeans.txt')
 
 # ------------------
@@ -668,7 +667,7 @@ PredictedIL1_StitchResponse <- ggplot(diff_Frame , aes(y=PredictedIL1beta, x=`Ce
 ggsave('./CVF_ImmuneMarkers_Analysis/PredictedIL1_StitchResponse.png', PredictedIL1_StitchResponse)
 ```
 
-# Figure 3) F
+# Figure 5) F
 ```{r}
 # Baseline Boxplots MBL
 PreStitch_MBL <- ggplot(subset(Stitch_Pre_Only_Max, `Cerclage material` %in% c('Mersilene', 'Nylon')) , aes(y=log(`CVF MBL (ng/ml)` + 1), x=`Cerclage material`)) + geom_boxplot(aes(fill=Outcome, colour=Outcome), outlier.shape=NA, alpha=0.4) + scale_colour_manual(values=c("red","green4"))  + scale_fill_manual(values=c("red","green4"))  + geom_point(position=position_jitterdodge(), aes(col=Outcome)) + ylab("Measured MBL")
